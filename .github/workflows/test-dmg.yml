@@ -43,6 +43,7 @@ jobs:
       - name: 临时签名 + 打 DMG / zip
         run: |
           set -euo pipefail
+          exec > >(tee -a "$GITHUB_STEP_SUMMARY") 2>&1
           APP=$(ls -d "$RUNNER_TEMP"/KittyTools.xcarchive/Products/Applications/*.app)
           NAME=$(basename "$APP" .app)
           VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
@@ -89,6 +90,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          exec > >(tee -a "$GITHUB_STEP_SUMMARY") 2>&1
           TAG="test-${GITHUB_SHA::7}"
           cat > "$RUNNER_TEMP/NOTES.md" <<EOF
           测试包（自动构建）：$NAME $VERSION，未公证、临时签名。
