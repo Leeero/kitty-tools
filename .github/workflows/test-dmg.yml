@@ -54,7 +54,7 @@ jobs:
           ENT="$GITHUB_WORKSPACE/macos/Config/KittyTools.entitlements"
           while IFS= read -r b; do
             codesign --force --deep --sign - "$b"
-          done < <(find "$APP/Contents" -name "*.appex" -o -name "*.framework" -o -name "*.dylib")
+          done < <(find "$APP/Contents" \( -name "*.appex" -o -name "*.framework" -o -name "*.dylib" -o -name "*.xpc" \))
           codesign --force --sign - --options runtime --entitlements "$ENT" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
