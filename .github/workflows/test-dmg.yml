@@ -1,0 +1,116 @@
+name: test-dmg
+
+# 只在 fork 的 ci-dmg 分支上跑：这台机器（Xcode 26.6 / macOS 26.5 SDK）编不了这个分支，
+# 借 GitHub 的 xcode-27 镜像（macOS 27.0.1 + Xcode 27.2）出一个**未公证、临时签名**的测试包。
+# 正式的发布包还是走 macos/build-dmg.sh（Apple Development 签名 + DMG 摆位 + 更新清单）。
+on:
+  push:
+    branches: [ci-dmg]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具链
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i macos
+
+      - name: 单测（不阻塞出包）
+        continue-on-error: true
+        run: |
+          cd macos
+          xcodebuild test -project KittyTools.xcodeproj -scheme KittyTools \
+            -destination 'platform=macOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: 编译 Release（不签名）
+        run: |
+          cd macos
+          xcodebuild archive -project KittyTools.xcodeproj -scheme KittyTools \
+            -configuration Release -destination 'generic/platform=macOS' \
+            -archivePath "$RUNNER_TEMP/KittyTools.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+      - name: 临时签名 + 打 DMG / zip
+        run: |
+          set -euo pipefail
+          APP=$(ls -d "$RUNNER_TEMP"/KittyTools.xcarchive/Products/Applications/*.app)
+          NAME=$(basename "$APP" .app)
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          echo "包：$NAME $VERSION"
+          lipo -archs "$APP/Contents/MacOS/$NAME"
+
+          # 内部组件（访达扩展）先各自临时签，再签 App 本体；Release 开了强化运行时，
+          # 临时签同样带上 entitlements（apple-events / 麦克风），不然这两个权限系统会静默拒绝
+          ENT="$GITHUB_WORKSPACE/macos/Config/KittyTools.entitlements"
+          while IFS= read -r b; do
+            codesign --force --deep --sign - "$b"
+          done < <(find "$APP/Contents" -name "*.appex" -o -name "*.framework" -o -name "*.dylib")
+          codesign --force --sign - --options runtime --entitlements "$ENT" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          STAGE="$RUNNER_TEMP/stage"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+
+          cat > "$STAGE/装之前先看.txt" <<'TXT'
+          这是测试包：没有 Apple 开发者签名、也没公证。
+
+          从浏览器下载的（DMG 或 zip）：装到 /Applications 之后，在终端跑一次
+            xattr -dr com.apple.quarantine "/Applications/Kitty Tools.app"
+          或者右键 App → 打开 → 仍要打开。
+
+          用 curl 下载的不会有隔离标记，直接打开就行。
+
+          临时签名的东西每出一个包都算「另一个 App」：屏幕录制、辅助功能这些权限
+          可能要在 系统设置 › 隐私与安全性 里重新给一次。
+          TXT
+
+          hdiutil create -volname "$NAME" -srcfolder "$STAGE" -ov -format UDZO \
+            "$RUNNER_TEMP/${NAME}_${VERSION}_arm64.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" \
+            "$RUNNER_TEMP/${NAME}_${VERSION}_arm64.zip"
+
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: 传到 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="test-${GITHUB_SHA::7}"
+          cat > "$RUNNER_TEMP/NOTES.md" <<EOF
+          测试包（自动构建）：$NAME $VERSION，未公证、临时签名。
+
+          - 跑在 macOS 27.0.1 + Xcode 27.2 上，\`CODE_SIGNING_ALLOWED=NO\` 编译后临时签名
+          - 装法：拖进「应用程序」，然后 \`xattr -dr com.apple.quarantine "/Applications/$NAME.app"\`
+          - 这版 = 上游 0.10.0（多语言、专注模式、刘海岛扩展等）+ fork 的翻译 SSE 修复，合并自 macos 分支
+          - 临时签名算另一个 App，屏幕录制 / 辅助功能权限可能要重新给一次
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RUNNER_TEMP"/*.dmg "$RUNNER_TEMP"/*.zip --clobber
+          else
+            gh release create "$TAG" "$RUNNER_TEMP"/*.dmg "$RUNNER_TEMP"/*.zip \
+              --title "测试包 $NAME $VERSION（$TAG）" --notes-file "$RUNNER_TEMP/NOTES.md" \
+              --prerelease --latest=false
+          fi
+
+      - name: 留一份 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/*.dmg
+            ${{ runner.temp }}/*.zip
+          retention-days: 14
