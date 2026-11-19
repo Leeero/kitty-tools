@@ -32,6 +32,31 @@ final class ClipboardWatcher {
   /// 带格式数据超过就只存纯文本
   static let maxRichBytes = 2 * 1_048_576
 
+  /// 文字条目带的格式（X3）：真带图的 RTFD（里面除了正文还有附件文件）优先——只存 RTF 的话图文混排粘回去图就没了；
+  /// 没有图的、超过上限的照旧 RTF，再没有用 HTML。文本编辑、备忘录这类几乎每次都给 RTFD，没图时不要它：原来的 RTF 留着、
+  /// 库里也不白放一份。ponytail: 带图的 RTFD 和 RTF 一样整份存在 clips 行里（2 MB 封顶）、不算进图片占用上限；
+  /// 真有人存一大堆，再挪到单独的表、算进上限
+  static func richFormat(of pasteboard: NSPasteboard) -> (type: ClipItem.RichType?, rich: Data?) {
+    if let data = pasteboard.data(forType: .rtfd), data.count <= maxRichBytes,
+      hasAttachments(rtfd: data)
+    {
+      return (.rtfd, data)
+    }
+    for (type, richType) in [
+      (NSPasteboard.PasteboardType.rtf, ClipItem.RichType.rtf), (.html, .html),
+    ] {
+      if let data = pasteboard.data(forType: type), data.count <= maxRichBytes {
+        return (richType, data)
+      }
+    }
+    return (nil, nil)
+  }
+
+  /// RTFD 里有没有附件：扁平的 RTFD 是一个文件包，除了 TXT.rtf 还有别的文件就是带了图
+  static func hasAttachments(rtfd data: Data) -> Bool {
+    (FileWrapper(serializedRepresentation: data)?.fileWrappers?.count ?? 0) > 1
+  }
+
   /// 新文本入库后回调（复制即译，M4）
   var onText: ((String) -> Void)?
   /// 用户在菜单栏暂停了记录：changeCount 照走，但不记、也不触发复制即译
@@ -73,14 +98,14 @@ final class ClipboardWatcher {
     isPaused = false
   }
 
-  /// 这次复制的来源（体检 B6）：通用剪贴板过来的是「其他设备」（没有 bundle ID，来源筛选里不列）；
+  /// 这次复制的来源（体检 B6）：通用剪贴板过来的是「其他设备」（ClipItem.remoteSourceName，显示时按界面语言翻；没有 bundle ID，来源筛选里不列）；
   /// 写入方打了来源标记就用它（名字按 bundle ID 查，排除的 App 照样认得出）；在本 App 自己的窗口里复制的
   /// （ownWindow：在自家浮层里 ⌘C，或本 App 在前台）没有来源（体检 B20）；都没有才用轮询时的前台 App（推测值）
   static func source(
     ownWindow: Bool = false, remote: Bool, marker: String?,
     frontmost: (name: String?, bundleID: String?)?, appName: (String) -> String?
   ) -> (name: String?, bundleID: String?) {
-    if remote { return ("其他设备", nil) }
+    if remote { return (ClipItem.remoteSourceName, nil) }
     if let marker, !marker.isEmpty { return (appName(marker) ?? marker, marker) }
     if ownWindow { return (nil, nil) }
     return frontmost ?? (nil, nil)
@@ -139,17 +164,12 @@ final class ClipboardWatcher {
           && ClipboardFilter.looksSensitive(text))
       else { return }
       item.text = text
-      // 格式总是记下来（体检 A5）：粘贴时用不用由「默认粘贴为纯文本」和 ⌥↩ 决定
-      var rich: Data?
-      for (type, richType) in [
-        (NSPasteboard.PasteboardType.rtf, ClipItem.RichType.rtf), (.html, .html),
-      ] {
-        if let data = pasteboard.data(forType: type), data.count <= Self.maxRichBytes {
-          (item.richType, rich) = (richType, data)
-          break
-        }
+      // 格式总是记下来（体检 A5）：粘贴时用不用由「默认粘贴为纯文本」和 ⌥↩ 决定。只在要记的时候读（暂停、只为复制即译时不读）
+      if records {
+        let format = Self.richFormat(of: pasteboard)
+        item.richType = format.type
+        store.record(item, rich: format.rich)
       }
-      if records { store.record(item, rich: rich) }
       if Self.triggersCopyToTranslate(
         ownWindow: ownWindow, remote: types.contains(Self.remoteMarker), source: source)
       {

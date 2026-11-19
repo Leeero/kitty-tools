@@ -21,6 +21,11 @@ struct SnapshotProbeTests {
     ProcessInfo.processInfo.environment["KITTY_SNAPSHOT_ONLY"]?.split(separator: ",").map(
       String.init)
 
+  /// 摆出来的岛、按钮上的字：测试数据里写的就是 App 里的中文原文，当目录的 key 取（英文截图里是英文；目录里没有的照原样）
+  static func key(_ text: String) -> LocalizedStringResource {
+    LocalizedStringResource(stringLiteral: text)
+  }
+
   /// 这张图出不出（按文件名的前缀）
   nonisolated private static func wants(_ path: String) -> Bool {
     guard let only else { return true }
@@ -265,11 +270,12 @@ struct SnapshotProbeTests {
         "manage-groups-deleted",
         { m in
           m.dialog = .manageGroups
-          m.toast = .undo("已删除收藏夹「旅行」")
+          // 插值写法和 App 里同一个 key（英文截图里是英文）
+          m.toast = .undo("已删除收藏夹「\("旅行")」")
         }
       ),
       // 取消收藏后已超过保留天数（体检 A1）
-      ("toast-expiring", { m in m.toast = .undo("超过 7 天，稍后会被清理") }),
+      ("toast-expiring", { m in m.toast = .undo("超过 \(7) 天，稍后会被清理") }),
       // 菜单栏暂停了记录（D4）
       ("paused", { m in m.isRecordingPaused = true }),
       ("snippets", { m in m.scope = .snippets }),
@@ -278,6 +284,13 @@ struct SnapshotProbeTests {
       ("dialog-edit", { m in m.dialog = .edit(code.id) }),
       ("dialog-new-snippet", { m in m.dialog = .newSnippet }),
       ("dialog-new-group", { m in m.dialog = .newGroup([link.id]) }),
+      // 片段填空（X20）：第 2 / 2 个空，下面有「上一个」；只有一个空时没有 1/1
+      (
+        "dialog-fill",
+        { m in
+          m.dialog = .fill(.init(items: [], labels: ["称呼", "单号"], copies: false, plainText: nil))
+        }
+      ),
       // ⌘P / 底栏图钉：底栏就地提示（体检 A9）
       ("toast-pinned", { m in m.toast = .message("已固定") }),
       // 含图片的多选 ⌘C 只写了第 1 条：警告，不带绿色对勾（体检 B3）
@@ -523,6 +536,9 @@ struct SnapshotProbeTests {
           GeneralTab(
             transfer: SettingsTransfer(services: services, clipboard: store, history: history)))
       case .island: AnyView(IslandTab())
+      // 添加着、缺授权是摆好的（不读 Dev 版的偏好、不查这台的授权）
+      case .plugins:
+        AnyView(PluginsPage(fixed: .init(added: [.notes, .reminders, .island], lacking: [])))
       case .clipboard: AnyView(ClipboardTab(store: store))
       case .launcher: AnyView(LauncherTab())
       case .launchpad: AnyView(LaunchpadTab())
@@ -535,7 +551,23 @@ struct SnapshotProbeTests {
       case .reminders: AnyView(RemindersTab(fixed: Reminder.examples))
       // 私有接口在不在按固定的「都在」画（图不跟着机器变）
       case .dockPreview: AnyView(DockPreviewTab(missing: []))
-      case .finderMenu: AnyView(FinderMenuTab(extensionEnabled: false))
+      case .finderMenu:
+        AnyView(
+          FinderMenuTab(
+            extensionEnabled: false, finderAutomation: .notAsked, desktopInICloud: false))
+      // 没起的保持唤醒（只读偏好，不建断言）
+      case .keepAwake: AnyView(KeepAwakeTab(keepAwake: KeepAwake()))
+      // 授权按固定的「没给」画
+      case .bluetoothSnooze: AnyView(BluetoothSnoozeTab(requestAccess: {}, authorized: false))
+      case .smoothScroll:
+        AnyView(
+          SmoothScrollTab(
+            smoothScroll: SmoothScroll(observes: false), authorized: false, others: [],
+            natural: true, excluded: []
+          ))
+
+      // 授权按固定的「没给」画
+      case .appShortcuts: AnyView(AppShortcutsTab(trusted: false))
       case .translate:
         AnyView(TranslateTab(services: services, history: history, speaker: speaker))
       case .hotkeys: AnyView(HotkeysTab(center: hotKeys))
@@ -560,6 +592,10 @@ struct SnapshotProbeTests {
     let updateStates: [(String, Updater.State, Bool, Double?)] = [
       ("available", .available(release), false, nil),
       ("available", .available(release), true, nil),
+      // 跳过了这一版、后台已经下好（第四轮体检 X11）
+      ("skipped", .available(release), false, nil),
+      ("ready", .available(release), false, nil),
+      ("ready", .available(release), true, nil),
       ("installing", .installing(release), false, nil),
       ("downloading", .installing(release), false, 0.42),
       ("downloading", .installing(release), true, 0.42),
@@ -573,7 +609,9 @@ struct SnapshotProbeTests {
     navigation.page = .about
     for (name, state, dark, progress) in updateStates {
       // 下载中有「取消」（第四轮体检 E23），下完在装的没有
-      let updater = Updater(state: state, progress: progress, downloading: name == "downloading")
+      let updater = Updater(
+        state: state, progress: progress, downloading: name == "downloading",
+        skipped: name == "skipped" ? release.version : nil, ready: name == "ready" ? release : nil)
       try snapshot(
         SettingsRoot(navigation: navigation) { page in
           page == .about ? AnyView(AboutTab(updater: updater)) : pages(page)
@@ -583,7 +621,7 @@ struct SnapshotProbeTests {
         size: NSSize(width: 780, height: 600), dark: dark,
         to: "\(out)/settings-about-update-\(name)\(dark ? "-dark" : "").png")
     }
-    // 设置 › 截图选过文件夹（体检 A28）：文件夹图标 + 访达里的名字 +「恢复默认」；常驻缩略图关着（D18）；截图拷贝为 PNG 文件。
+    // 设置 › 截图选过文件夹（体检 A28）：文件夹图标 + 访达里的名字 +「恢复默认」；常驻缩略图关着（D18）；截图拷贝为 PNG 文件；操作提示关、只显示放大镜（2026-11-17）。
     // 设置 › 录制（2026-10-03 从截图页拆出来）同一份偏好：「保存到」也是那个文件夹；录屏组（录屏第 2 批）60 fps、倒数 5 秒、
     // 不显示光标；录音组（录音第 6 批）来源「两者」、「按快捷键后立即开始录音」开着（手测反馈第 3 批；默认的样子在下面
     // -default 那两张）。临时偏好域和临时文件夹，不改用户的快速保存位置
@@ -598,6 +636,8 @@ struct SnapshotProbeTests {
     shotPrefs.set(inbox.path, forKey: Prefs.screenshotSaveDirectory)
     shotPrefs.set(Prefs.ShotPlacement.clothesline.rawValue, forKey: Prefs.screenshotPlacement)
     shotPrefs.set("file", forKey: Prefs.screenshotCopyAs)
+    shotPrefs.set(false, forKey: Prefs.screenshotShowsHint)
+    shotPrefs.set(Prefs.Loupe.loupe.rawValue, forKey: Prefs.screenshotLoupe)
     shotPrefs.set(60, forKey: Prefs.screenRecordFrameRate)
     shotPrefs.set(5, forKey: Prefs.screenRecordCountdown)
     shotPrefs.set(false, forKey: Prefs.screenRecordShowsCursor)
@@ -606,7 +646,7 @@ struct SnapshotProbeTests {
     for dark in [false, true] {
       try snapshot(
         ScreenshotTab(shots: nil).defaultAppStorage(shotPrefs).environment(navigation),
-        size: NSSize(width: 640, height: 720),
+        size: NSSize(width: 640, height: 1000),
         dark: dark, to: "\(out)/settings-screenshot-custom\(dark ? "-dark" : "").png")
       try snapshot(
         RecordTab().defaultAppStorage(shotPrefs), size: NSSize(width: 640, height: 860),
@@ -630,7 +670,7 @@ struct SnapshotProbeTests {
     islandPrefs.set(true, forKey: Prefs.islandShowsHistory)
     for dark in [false, true] {
       try snapshot(
-        IslandTab().defaultAppStorage(islandPrefs), size: NSSize(width: 640, height: 1400),
+        IslandTab().defaultAppStorage(islandPrefs), size: NSSize(width: 640, height: 2200),
         dark: dark, to: "\(out)/settings-island-custom\(dark ? "-dark" : "").png")
     }
     // 设置 › 通用「菜单栏」（第 9 批 M1 M2）：显示 + 彩色、隐藏（图标样式置灰），各出深色；临时偏好域，不动用户的菜单栏图标
@@ -887,7 +927,7 @@ struct SnapshotProbeTests {
       (
         "island-gif-progress",
         .init(
-          title: "正在转成 GIF…", detail: ShelfCard.progressDetail(37, note: "只转前 60 秒"),
+          title: "正在转成 GIF…", detail: "\(ShelfCard.progressDetail(37, note: "只转前 60 秒"))",
           tone: .progress, symbol: ShelfCard.gifIslandSymbol, leading: .tone, fraction: 0.37),
         notch
       ),
@@ -895,13 +935,13 @@ struct SnapshotProbeTests {
       (
         "island-update-progress",
         .init(
-          title: Updater.installingTitle("0.5.0"), detail: Updater.installingDetail(0.42),
+          title: Updater.installingTitle("0.5.0"), detail: "\(Updater.installingDetail(0.42))",
           tone: .progress, symbol: "arrow.down.circle.fill", leading: .tone, fraction: 0.42), notch
       ),
       (
         "island-update-progress-capsule",
         .init(
-          title: Updater.installingTitle("0.5.0"), detail: Updater.installingDetail(1),
+          title: Updater.installingTitle("0.5.0"), detail: "\(Updater.installingDetail(1))",
           tone: .progress, symbol: "arrow.down.circle.fill", leading: .tone, fraction: 1),
         .capsule(menuBar: 24)
       ),
@@ -909,7 +949,7 @@ struct SnapshotProbeTests {
       (
         "island-compress-progress",
         .init(
-          title: "正在压缩…", detail: ShelfCard.progressDetail(37), tone: .progress,
+          title: "正在压缩…", detail: "\(ShelfCard.progressDetail(37))", tone: .progress,
           symbol: ShelfCard.compressIslandSymbol, leading: .tone, fraction: 0.37), notch
       ),
       (
@@ -970,7 +1010,7 @@ struct SnapshotProbeTests {
       (
         "island-expanded-error",
         .init(
-          title: "翻译失败", detail: longError, tone: .error,
+          title: "翻译失败", detail: "\(longError)", tone: .error,
           symbol: "exclamationmark.circle.fill", leading: .tone), notch, ["重试"], true
       ),
       (
@@ -996,7 +1036,8 @@ struct SnapshotProbeTests {
     ]
     for (name, content, geometry, titles, expanded) in interactive {
       let island = Island(
-        showing: content, geometry: geometry, actions: titles.map { Island.Action($0) {} },
+        showing: content, geometry: geometry,
+        actions: titles.map { Island.Action(Self.key($0)) {} },
         expanded: expanded)
       try snapshot(
         IslandView(island: island), size: geometry.windowSize, dark: false, to: "\(out)/\(name).png"
@@ -1004,7 +1045,9 @@ struct SnapshotProbeTests {
     }
     // 那一张（点刘海 / 快捷键叫出来，2026-10-26）：一排快捷动作 + 最近的提示（带打开类按钮的、截图缩略图前导、错误）；
     // 无刘海屏上是圆角卡片、还没有提示时的空样子；指针停在刘海上时鼓起一点
-    let quick = HotKeyAction.islandShortcuts.map { Island.Action($0.title, symbol: $0.symbol) {} }
+    let quick = HotKeyAction.islandShortcuts.map {
+      Island.Action($0.titleResource, symbol: $0.symbol) {}
+    }
     let records = [
       Island.Record(
         content: .init(
@@ -1018,7 +1061,8 @@ struct SnapshotProbeTests {
         at: .now.addingTimeInterval(-300)),
       Island.Record(
         content: .init(
-          title: "翻译失败", detail: longError, tone: .error, symbol: "exclamationmark.circle.fill",
+          title: "翻译失败", detail: "\(longError)", tone: .error,
+          symbol: "exclamationmark.circle.fill",
           leading: .tone), actions: [], at: .now.addingTimeInterval(-1500)),
       Island.Record(
         content: .init(
@@ -1061,6 +1105,19 @@ struct SnapshotProbeTests {
         ("island-board-calendar", busy, false),
         ("island-board-calendar-empty", Island.Agenda(items: []), false),
         ("island-board-calendar-history", nil, true),
+        // 第 5 批：日历的颜色 + 月历上有日程的日子
+        (
+          "island-board-calendar-colors",
+          Island.Agenda(
+            items: [
+              Island.AgendaItem(
+                id: "1", title: "周会", time: "10:30",
+                color: CGColor(red: 0.2, green: 0.5, blue: 1, alpha: 1)),
+              Island.AgendaItem(
+                id: "3", title: "牙医", time: "18:30",
+                color: CGColor(red: 1, green: 0.6, blue: 0, alpha: 1)),
+            ], busy: [3, 5, 14, 20, 21, 27]), false
+        ),
       ]
       for (name, agenda, history) in cases {
         let island = Island(
@@ -1097,6 +1154,20 @@ struct SnapshotProbeTests {
     try snapshot(
       IslandView(island: card), size: notch.windowSize, dark: false,
       to: "\(out)/island-wings-card.png")
+    // 保持唤醒手动开的那一段（刘海岛完善 D1）：左耳杯子、右耳倒数；点开的卡片上「停止」
+    // 一小时以上耳朵上写「N小时」（2026-11-16）：「1小时」「15小时」（12 pt 放不下、缩到 10）、一小时以内照旧按秒倒数
+    let awake = KeepAwake.activity(until: .now.addingTimeInterval(3600), display: true) {}
+    for (name, seconds) in [("", 3600.0), ("-long", 15 * 3600.0), ("-minutes", 42 * 60.0)] {
+      let shown = KeepAwake.activity(until: .now.addingTimeInterval(seconds), display: true) {}
+      try snapshot(
+        IslandView(island: Island(showing: nil, geometry: notch, activities: [shown])),
+        size: notch.windowSize, dark: false, to: "\(out)/island-wings-awake\(name).png")
+    }
+    let awakeCard = Island(showing: nil, geometry: notch, activities: [awake])
+    awakeCard.tapped()
+    try snapshot(
+      IslandView(island: awakeCard), size: notch.windowSize, dark: false,
+      to: "\(out)/island-wings-awake-card.png")
     // 正在播放（刘海岛扩展第 2 期）：耳朵上的封面 + 跳动条（在播 / 暂停）、点耳朵的播放卡片（有封面 / 没有封面也没有 App 图标）、
     // 封面是画出来的一块渐变，不读用户的东西
     let cover = NSImage(size: NSSize(width: 256, height: 256), flipped: false) { rect in
@@ -1128,6 +1199,30 @@ struct SnapshotProbeTests {
             showing: nil, geometry: notch, activities: [media(playing: playing, artwork: cover)])),
         size: notch.windowSize, dark: false, to: "\(out)/\(name).png")
     }
+    // 开着专注模式时一直挂在刘海上（2026-11-18）：左耳模式的符号，点开是卡片
+    do {
+      let dnd = SystemFocus.Mode(
+        id: "com.apple.donotdisturb.mode.default", name: "Do Not Disturb", symbol: "moon.fill",
+        tint: "systemIndigoColor")
+      try snapshot(
+        IslandView(
+          island: Island(showing: nil, geometry: notch, activities: [SystemFocus.activity(dnd)])),
+        size: notch.windowSize, dark: false, to: "\(out)/island-wings-focus.png")
+      let island = Island(showing: nil, geometry: notch, activities: [SystemFocus.activity(dnd)])
+      island.tapped()
+      try snapshot(
+        IslandView(island: island), size: notch.windowSize, dark: false,
+        to: "\(out)/island-focus-card.png")
+    }
+    // 专注模式开着、打开了「跳动条换成专注模式的图标」：右耳画模式的符号（2026-11-17 第 2 批）
+    do {
+      let island = Island(
+        showing: nil, geometry: notch, activities: [media(playing: true, artwork: cover)])
+      island.focusMark = Island.FocusMark(symbol: "moon.fill", tint: .systemIndigo)
+      try snapshot(
+        IslandView(island: island), size: notch.windowSize, dark: false,
+        to: "\(out)/island-wings-media-focus.png")
+    }
     for (name, art) in [("island-media-card", cover), ("island-media-card-bare", nil)] {
       let island = Island(
         showing: nil, geometry: notch, activities: [media(playing: art != nil, artwork: art)])
@@ -1136,6 +1231,25 @@ struct SnapshotProbeTests {
         IslandView(island: island), size: notch.windowSize, dark: false, to: "\(out)/\(name).png")
     }
     // 按音量键 / 亮度键时的那一行：音量 62%、静音、亮度 30%
+    // 第 7 批：描一圈细边（深色底上看）
+    do {
+      let island = Island(showing: nil, geometry: notch)
+      island.outlined = true
+      island.showLevel(Island.Level(kind: .volume, fraction: 0.625))
+      try snapshot(
+        IslandView(island: island), size: notch.windowSize, dark: true,
+        to: "\(out)/island-level-outlined.png")
+    }
+    // 第 4 批：细条用强调色 + 旁边写百分比
+    do {
+      let island = Island(showing: nil, geometry: notch)
+      island.levelAccent = true
+      island.levelPercent = true
+      island.showLevel(Island.Level(kind: .volume, fraction: 0.625))
+      try snapshot(
+        IslandView(island: island), size: notch.windowSize, dark: false,
+        to: "\(out)/island-level-volume-options.png")
+    }
     for (name, level) in [
       ("island-level-volume", Island.Level(kind: .volume, fraction: 0.625)),
       ("island-level-muted", Island.Level(kind: .volume, fraction: 0.625, muted: true)),
@@ -1161,6 +1275,35 @@ struct SnapshotProbeTests {
         SystemNotices.powerLevel(plugged: false, percent: 64, low: false)
       ),
       ("island-level-power-low", SystemNotices.powerLevel(plugged: false, percent: 9, low: true)),
+      // 系统专注模式（SystemFocus，2026-11-17）：勿扰打开、自己建的「午睡」关掉、名字长的（每侧照名字加宽）
+      (
+        "island-level-focus",
+        SystemFocus.level(
+          SystemFocus.Mode(
+            id: "com.apple.donotdisturb.mode.default", name: "Do Not Disturb", symbol: "moon.fill",
+            tint: "systemIndigoColor"), on: true)
+      ),
+      (
+        "island-level-focus-off",
+        SystemFocus.level(
+          SystemFocus.Mode(
+            id: "com.apple.donotdisturb.mode.headphones", name: "午睡", symbol: "headphones",
+            tint: "systemOrangeColor"), on: false)
+      ),
+      (
+        "island-level-focus-long",
+        SystemFocus.level(
+          SystemFocus.Mode(
+            id: "x", name: "写周报的时候不要打扰", symbol: "pencil", tint: "systemTealColor"),
+          on: true)
+      ),
+      // 低电量模式打开（同专注模式那种开 / 关，2026-11-17 第 3 批）
+      ("island-level-lowpower", SystemNotices.lowPowerLevel(on: true)),
+      // 第 4 批：电量低时写还能用多久
+      (
+        "island-level-power-minutes",
+        SystemNotices.powerLevel(plugged: false, percent: 9, low: true, minutes: 25)
+      ),
     ] {
       let island = Island(showing: nil, geometry: notch)
       island.showLevel(level)
@@ -1182,6 +1325,15 @@ struct SnapshotProbeTests {
       try snapshot(
         IslandView(island: device), size: capsule.windowSize, dark: false,
         to: "\(out)/island-level-device-capsule.png")
+      let focus = Island(showing: nil, geometry: capsule)
+      focus.showLevel(
+        SystemFocus.level(
+          SystemFocus.Mode(
+            id: "com.apple.focus.work", name: "Work", symbol: "person.lanyardcard.fill",
+            tint: "systemCyanColor"), on: true))
+      try snapshot(
+        IslandView(island: focus), size: capsule.windowSize, dark: false,
+        to: "\(out)/island-level-focus-capsule.png")
     }
     // 下一个日程：开始前 10 分钟挂在耳朵上倒数；点开是标题、时间地点、加入会议 / 打开日历
     do {
@@ -1199,6 +1351,37 @@ struct SnapshotProbeTests {
       try snapshot(
         IslandView(island: island), size: notch.windowSize, dark: false,
         to: "\(out)/island-event-card.png")
+    }
+    // 提醒的倒数（2026-11-17 拍板 C1–C5）：10 分钟以上只到分钟、最后 10 分钟走秒、最后 1 分钟强调色、设了图标的左耳画它
+    do {
+      // busts：要垫浅底的深色表情，App 是浅色时也要垫上（评审）
+      let cases: [(String, TimeInterval, String?)] = [
+        ("minutes", 42 * 60 - 3, nil), ("ticking", 9 * 60 + 42, nil), ("closing", 42, nil),
+        ("emoji", 42 * 60 - 3, "sleeping-face"), ("emoji-plated", 42 * 60 - 3, "busts"),
+      ]
+      for (name, left, emoji) in cases {
+        let countdown = Island.Activity(
+          id: "reminder", kind: .reminder, title: "喝水", symbol: "alarm.fill",
+          trailing: .countdown(to: .now.addingTimeInterval(left)), emoji: emoji)
+        try snapshot(
+          IslandView(island: Island(showing: nil, geometry: notch, activities: [countdown])),
+          size: notch.windowSize, dark: false, to: "\(out)/island-wings-reminder-\(name).png")
+      }
+    }
+    // 专注模式里压着的提醒（2026-11-17 拍板 B3）：左耳闹钟、右耳几条（强调色）；点开是卡片
+    do {
+      let held = Island.Activity(
+        id: ReminderCenter.heldActivity, kind: .heldReminder, title: "喝水 · 交周报",
+        symbol: "alarm.fill", trailing: .text("2"),
+        actions: [Island.Action("知道了") {}, Island.Action("稍后 5 分钟") {}], tintsReading: true)
+      try snapshot(
+        IslandView(island: Island(showing: nil, geometry: notch, activities: [held])),
+        size: notch.windowSize, dark: false, to: "\(out)/island-wings-reminder-held.png")
+      let card = Island(showing: nil, geometry: notch, activities: [held])
+      card.tapped()
+      try snapshot(
+        IslandView(island: card), size: notch.windowSize, dark: false,
+        to: "\(out)/island-wings-reminder-held-card.png")
     }
     // 换歌的一瞥：耳朵不动，下面垂一行居中的「♪ 歌名 · 艺人」
     do {
@@ -1283,7 +1466,8 @@ struct SnapshotProbeTests {
         IslandView(
           island: Island(
             showing: .init(
-              title: title, detail: detail, tone: tone, symbol: symbol, leading: .tone),
+              title: Self.key(title), detail: detail.map(Self.key), tone: tone, symbol: symbol,
+              leading: .tone),
             geometry: notch)),
         size: notch.windowSize, dark: false, to: "\(out)/\(name).png")
     }
@@ -1443,6 +1627,10 @@ struct SnapshotProbeTests {
     try snapshot(
       root([]), size: NSSize(width: 780, height: 600), dark: false,
       to: "\(out)/reminders-settings-empty.png")
+    // 拉长到最下面的「专注模式」一节（2026-11-17：任何专注模式都认、滤镜按模式另选）
+    try snapshot(
+      root(list), size: NSSize(width: 780, height: 1500), dark: false,
+      to: "\(out)/reminders-settings-focus.png")
     try snapshot(
       root(list), size: NSSize(width: 700, height: 460), dark: false,
       to: "\(out)/reminders-settings-min.png")
@@ -1497,7 +1685,8 @@ struct SnapshotProbeTests {
     // 刘海岛上挂着的提醒：一条（带说明）、几条合成一条、错过的；收着 / 展开，刘海屏 / 胶囊
     let notch = Island.Geometry.notch(width: 200, height: 32)
     let capsule = Island.Geometry.capsule(menuBar: 24)
-    let buttons = ["知道了", "稍后 5 分钟"]
+    // 按钮的字走目录（英文截图里是英文；中文和原来一样）
+    let buttons = [String(localized: "知道了"), String(localized: "稍后 \(5) 分钟")]
     let cases: [(String, (String, String?), [String], Island.Geometry, Bool)] = [
       ("one", ReminderCenter.notice(fired: [meeting], missed: [])!, buttons, notch, false),
       ("one-expanded", ReminderCenter.notice(fired: [meeting], missed: [])!, buttons, notch, true),
@@ -1506,7 +1695,7 @@ struct SnapshotProbeTests {
         capsule, false
       ),
       (
-        "missed", ReminderCenter.notice(fired: [], missed: [rent, call, nap])!, ["知道了"], notch,
+        "missed", ReminderCenter.notice(fired: [], missed: [rent, call, nap])!, [buttons[0]], notch,
         false
       ),
       (
@@ -1517,8 +1706,10 @@ struct SnapshotProbeTests {
     for (name, notice, titles, geometry, expanded) in cases {
       let island = Island(
         showing: .init(
-          title: notice.0, detail: notice.1, tone: .info, symbol: "alarm.fill", leading: .tone),
-        geometry: geometry, actions: titles.map { Island.Action($0) {} }, expanded: expanded)
+          title: Self.key(notice.0), detail: notice.1.map(Self.key), tone: .info,
+          symbol: "alarm.fill", leading: .tone),
+        geometry: geometry, actions: titles.map { Island.Action(Self.key($0)) {} },
+        expanded: expanded)
       try snapshot(
         IslandView(island: island), size: geometry.windowSize, dark: false,
         to: "\(out)/reminders-island-\(name).png")
@@ -1529,20 +1720,23 @@ struct SnapshotProbeTests {
       (
         "full",
         .init(
-          title: "休息眼睛", detail: "看看 6 米外的地方，20 秒", symbol: "sleeping-face", seconds: 20,
+          title: Reminder.examples[1].displayTitle, detail: Reminder.examples[1].displayDetail,
+          symbol: "sleeping-face", seconds: 20,
           snoozes: [5, 15, 60]), true, CGSize(width: 1440, height: 900)
       ),
       (
         "full-merged",
         .init(
-          title: "周会 · 交房租", detail: "还错过了：给妈妈打电话", symbol: "busts", seconds: 0,
+          title: "周会 · 交房租", detail: String(localized: "还错过了：\("给妈妈打电话")"), symbol: "busts",
+          seconds: 0,
           snoozes: [15, 60]), true, CGSize(width: 1440, height: 900)
       ),
       (
         "full-note",
         .init(
           title: "午休", detail: nil, symbol: "", seconds: 0, snoozes: [5, 15, 60],
-          note: ("还没给辅助功能授权，进不了状态屏", true)), true, CGSize(width: 1440, height: 900)
+          note: (String(localized: "还没给辅助功能授权，进不了状态屏"), true)), true,
+        CGSize(width: 1440, height: 900)
       ),
       (
         "full-settling",
@@ -1717,12 +1911,26 @@ struct SnapshotProbeTests {
     }
   }
 
+  /// 设置 › 通用最上面（多语言第 0 批，2026-11-15）：功能、语言、外观、强调色。几秒，图以 settings-language 开头：
+  ///   -only-testing:'KittyToolsTests/SnapshotProbeTests/language()'
+  /// 英文图加 -testLanguage en -testRegion US 再跑一遍（多语言的每一批都这样出英文图）
+  @Test(.enabled(if: directory != nil)) func language() throws {
+    let out = try #require(Self.directory)
+    try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+    Prefs.registerDefaults()
+    for dark in [false, true] {
+      try snapshot(
+        GeneralTab(), size: NSSize(width: 640, height: 420), dark: dark,
+        to: "\(out)/settings-language\(dark ? "-dark" : "").png")
+    }
+  }
+
   /// 主界面（Shell/HomePanel.swift，2026-10-29 拍板）。单独一个测试函数，几秒：
   ///   -only-testing:'KittyToolsTests/SnapshotProbeTests/home()'
   /// 面板的大小取模型算出来的（和真面板一样）。出：全开浅 / 深色（键盘选中「截图」、鼠标停在「启动器」上；插件收在最后
   /// 一节）、新装默认的四个功能（没有「插件」一节，多一行「1 个功能关着 · 管理…」）、只添加了一个插件（「插件」一节里一格）、
   /// 在录屏、有钉图（深色；两个开关开着也不占格子）、没添加便签、关掉录制、增强对比度（选中描边、发丝线）、
-  /// 有新版本（底栏左边「更新到 x」，Updater 从环境给）
+  /// 有新版本（底栏左边「更新到 x」，Updater 从环境给）、别的 App 开着安全输入（issue #27，浅：知道是谁 + 关着的功能；深：不知道是谁）
   @Test(.enabled(if: directory != nil)) func home() throws {
     let out = try #require(Self.directory)
     try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
@@ -1764,6 +1972,15 @@ struct SnapshotProbeTests {
     fewer.features = all.subtracting([.notes, .record])
     let fewerModel = model(fewer, off: Home.offCount(enabled: fewer.features, available: all))
     try shot("home-features-off", HomeView(model: fewerModel), fewerModel)
+    // 别的 App 开着安全输入、只带 ⌥ 的快捷键收不到（issue #27）：底下一行橙字，和关着的功能那一行一起；取不到是谁时（深色）
+    let secure = HomeModel(
+      sections: Home.sections(state: fewer, keys: keys),
+      offCount: Home.offCount(enabled: fewer.features, available: all),
+      secureInput: .init(holder: "Google Chrome"))
+    try shot("home-secure-input", HomeView(model: secure), secure)
+    let secureUnknown = HomeModel(
+      sections: Home.sections(state: state, keys: keys), secureInput: .init(holder: nil))
+    try shot("home-secure-input-dark", HomeView(model: secureUnknown), secureUnknown, dark: true)
     let contrast = model(state, selection: 0)
     try shot(
       "home-contrast",
@@ -2015,6 +2232,10 @@ struct SnapshotProbeTests {
     }
     let model = NotesWindowModel(store: store)
     try window("list", model)
+    // 多选（X6）：列表里勾了两条，右边写勾了几条、底下浮着整批操作的那一条
+    model.setListSelection([ids[0], ids[2]])
+    for dark in [false, true] { try window("marked\(dark ? "-dark" : "")", model, dark: dark) }
+    model.clearMarks()
     model.selection = ids[1]
     try window("list-dark", model, dark: true)
     model.selection = ids[4]
@@ -2153,6 +2374,15 @@ struct SnapshotProbeTests {
     }
     let photo = try addImage(600, 300)
     let small = try addImage(160, 120)
+    // 快速记一条贴了图（X5）：正文下面一排缩略图（缩略图在后台解，屏外这一帧可能还是灰块）
+    let pictured = try NoteStore(db: Database(path: ":memory:"))
+    pictured.images = imageStore
+    for dark in [false, true] {
+      let withImages = NoteCaptureModel(store: pictured)
+      withImages.restore(
+        .init(body: "截图里那个按钮的位置", images: [photo, small].map(NoteImages.token)))
+      try capture("images\(dark ? "-dark" : "")", withImages, dark: dark)
+    }
     let missing = NoteImages.Image(id: UUID(), ext: "png", width: nil)
     let imageNotes = try NoteStore(db: Database(path: ":memory:"))
     imageNotes.images = imageStore
@@ -2391,6 +2621,11 @@ struct SnapshotProbeTests {
     }
     let wallModel = NotesWindowModel(store: wallStore)
     for dark in [false, true] { try wall(dark ? "dark" : "light", wallModel, dark: dark) }
+    // 多选（X6）：墙上 ⌘ 点了三张
+    _ = wallModel.click(wallIDs[2], modifiers: .command)
+    _ = wallModel.click(wallIDs[5], modifiers: .command)
+    try wall("marked", wallModel)
+    wallModel.clearMarks()
     // 第 7 批：卡片顶上那张缩略图（单独一面墙：两张卡片都在可见区里）
     let wallImages = try NoteStore(db: Database(path: ":memory:"))
     wallImages.images = imageStore
@@ -3133,7 +3368,8 @@ struct SnapshotProbeTests {
           c.cards = [
             .init(service: zhipu, state: .done("SwiftUI 提供了视图、控件和布局结构，用来**声明**应用的用户界面。")),
             .init(service: gpt, state: .running("SwiftUI 提供视图、控件以及")),
-            .init(service: claude, state: .failed(.config("密钥无效或没有权限"))),
+            .init(
+              service: claude, state: .failed(.config(String(localized: Self.key("密钥无效或没有权限"))))),
           ]
         }
       ),
@@ -3149,11 +3385,15 @@ struct SnapshotProbeTests {
           c.cards = [
             .init(service: zhipu, state: .running("")),
             .init(service: gpt, state: .truncated("进程是操作系统分配资源的基本单位，线程是 CPU 调度的基本单位。一个进程可以包含多个线程")),
-            .init(service: claude, state: .failed(.config("App ID 或密钥不对"))),
-            .init(service: .builtin(.baidu), state: .failed(TranslateError(message: "请求太频繁，稍后再试"))),
+            .init(
+              service: claude, state: .failed(.config(String(localized: Self.key("App ID 或密钥不对"))))),
+            .init(
+              service: .builtin(.baidu),
+              state: .failed(TranslateError(message: String(localized: Self.key("请求太频繁，稍后再试"))))),
             .init(
               service: deepseek,
-              state: .failed(TranslateError(message: "连不上服务地址", kind: .network))),
+              state: .failed(
+                TranslateError(message: String(localized: Self.key("连不上服务地址")), kind: .network))),
           ]
         }
       ),
@@ -3289,7 +3529,12 @@ struct SnapshotProbeTests {
           _ = c.handleHistoryCommand(#selector(NSResponder.insertNewline(_:)))
         }
       ),
-      ("translate-notice", { c in c.showNotice("划词翻译需要「辅助功能」授权", permission: .accessibility) }),
+      (
+        "translate-notice",
+        { c in
+          c.showNotice(String(localized: Self.key("划词翻译需要「辅助功能」授权")), permission: .accessibility)
+        }
+      ),
       ("translate-screenshot-empty", { c in c.showNotice("没有识别到文字，可以把选区框大一些再试") }),
     ]
     for dark in [false, true] {
@@ -3531,7 +3776,8 @@ struct SnapshotProbeTests {
       "/System/Applications/Calculator.app", "/System/Applications/Utilities/Activity Monitor.app",
       "/System/Applications/Utilities/Terminal.app", "/System/Applications/Notes.app",
       "/System/Applications/System Settings.app",
-    ].map(AppCatalog.item(path:))
+      // 应用名跟系统语言：截图固定成和界面同一种，不随跑测试的这台 Mac 变
+    ].map { AppCatalog.item(path: $0, languages: [InterfaceLanguage.isEnglish ? "en" : "zh-Hans"]) }
     let model = LauncherModel(usage: usage, apps: apps)
     model.boundHotKey = { $0.defaultHotKey }  // 不读本机设置，键帽固定是默认键
     // 「用 X 打开」：固定两个浏览器 / 两个编辑器（不问本机的 LaunchServices）；fy 的释义固定一句
@@ -3867,7 +4113,8 @@ struct SnapshotProbeTests {
       try renderLayers(
         SelectionView(
           image: frozen,
-          session: SelectionSession(mode: .quick, hint: "拖动框选要翻译的文字　Esc 取消")),
+          session: SelectionSession(mode: .quick, hint: "拖动框选要翻译的文字　Esc 取消"),
+          showsHint: true, loupe: .full),
         size: NSSize(width: 600, height: 180), dark: false, configure: configure,
         to: "\(out)/\(name).png")
     }
@@ -3957,10 +4204,27 @@ struct SnapshotProbeTests {
       try renderLayers(
         SelectionView(
           image: desktop, windows: windows,
-          session: SelectionSession(mode: .capture, lastRegion: .zero)),
+          session: SelectionSession(mode: .capture, lastRegion: .zero), showsHint: true,
+          loupe: .full),
         size: NSSize(width: 600, height: 480), dark: dark, configure: configure,
         to: "\(out)/\(name).png")
     }
+    // ⌥S 盖回截图的截图翻译也认元素（2026-11-16）：悬停框出指针下那一行，顶部提示是「单击翻译 · 滚轮 · Tab」
+    let session = SelectionSession(mode: .capture, lastRegion: .zero)
+    session.autoTranslates = true
+    session.findsElements = true
+    session.findElements = { _, point in
+      .chain([
+        ElementFinder.Layer(
+          frame: CGRect(x: point.x - 120, y: point.y - 12, width: 240, height: 24), name: "文本")
+      ])
+    }
+    try renderLayers(
+      SelectionView(
+        image: desktop, windows: windows, owners: [[4242], []], session: session,
+        keepsColors: false, showsHint: true, loupe: .full),
+      size: NSSize(width: 600, height: 480), dark: false,
+      configure: { $0.mouse = CGPoint(x: 160, y: 330) }, to: "\(out)/capture-translate-hover.png")
   }
 
   /// 长截图面板：刚开始（还没预览）、拼了一段（预览 + 尺寸）、对不上（橙色提示）、自动滚动中，深浅色
@@ -4066,6 +4330,14 @@ struct SnapshotProbeTests {
     canvas.cacheDisplay(in: shown, to: bitmap)
     try #require(bitmap.representation(using: .png, properties: [:]))
       .write(to: URL(filePath: "\(out)/scroll-editor-canvas.png"))
+    // 裁剪框开着（X17）：框外压暗、白边框、八个手柄
+    canvas.selectedAnnotation = nil
+    canvas.toggleCropping()
+    canvas.setCropForSnapshot(CGRect(x: 60, y: 420, width: 420, height: 300))
+    let cropped = try #require(canvas.bitmapImageRepForCachingDisplay(in: shown))
+    canvas.cacheDisplay(in: shown, to: cropped)
+    try #require(cropped.representation(using: .png, properties: [:]))
+      .write(to: URL(filePath: "\(out)/scroll-editor-crop.png"))
   }
 
   private func renderScrollCapture(_ out: String) throws {
@@ -4677,8 +4949,10 @@ struct SnapshotProbeTests {
       to: "\(out)/features-launchpad-off.png")
   }
 
-  /// 插件（2026-11-12）：设置 › 通用 › 功能 下面的插件卡片（没添加、添加了、启动器带过来时描着强调色那一圈，浅 / 深）、
-  /// 几秒，图以 plugins- 开头：-only-testing:'KittyToolsTests/SnapshotProbeTests/plugins()'。开关读临时偏好域
+  /// 插件（2026-11-12；2026-11-17 插件页改版）：设置 › 全部插件（四组；添加了、没添加、要授权、新；浅 / 深；侧栏搜索、
+  /// 启动器带过来时描着强调色那一圈）、没添加的插件的介绍页（睡眠关蓝牙：缺授权；保持唤醒：带快捷键；刘海岛：几项授权
+  /// 各一种状态）、设置 › 保持唤醒（定时开着，浅 / 深）。几秒，图以 plugins- 开头：
+  /// -only-testing:'KittyToolsTests/SnapshotProbeTests/plugins()'。添加着、缺授权是摆好的，开关和定时读临时偏好域
   @Test(.enabled(if: directory != nil)) func plugins() throws {
     let out = try #require(Self.directory)
     try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
@@ -4687,23 +4961,230 @@ struct SnapshotProbeTests {
     let prefs = try #require(UserDefaults(suiteName: name))
     defer { prefs.removePersistentDomain(forName: name) }
     let navigation = SettingsNavigation(defaults: nil)
-    func features() -> some View {
-      NavigationStack { FeaturesPage() }.environment(navigation).defaultAppStorage(prefs)
+    navigation.fresh = [
+      "plugin-keep-awake", "plugin-bluetooth-snooze", "plugin-smooth-scroll",
+      "plugin-app-shortcuts",
+    ]
+    let fixed = PluginsPage.Fixed(
+      added: [.notes, .reminders, .dockPreview, .island], lacking: [.dockPreview])
+    func list() -> some View {
+      PluginsPage(fixed: fixed).environment(navigation).defaultAppStorage(prefs)
     }
     for dark in [false, true] {
       try snapshot(
-        features(), size: NSSize(width: 600, height: 1000), dark: dark,
-        to: "\(out)/plugins-features\(dark ? "-dark" : "").png")
+        list(), size: NSSize(width: 600, height: 1000), dark: dark,
+        to: "\(out)/plugins-list\(dark ? "-dark" : "").png")
     }
-    navigation.focusedPlugin = .finderMenu
+    navigation.focusedPlugin = .statusScreen
     try snapshot(
-      features(), size: NSSize(width: 600, height: 1000), dark: false,
-      to: "\(out)/plugins-features-focused.png")
+      list(), size: NSSize(width: 600, height: 1000), dark: false,
+      to: "\(out)/plugins-list-focused.png")
     navigation.focusedPlugin = nil
-    prefs.set(true, forKey: Feature.finderMenu.prefsKey)
+    func intro(_ plugin: Feature, _ granted: @escaping (Permissions.Kind) -> Bool?) -> some View {
+      NavigationStack { PluginIntroPage(plugin: plugin, granted: granted) }
+        .environment(navigation).defaultAppStorage(prefs)
+    }
+    for dark in [false, true] {
+      try snapshot(
+        intro(.bluetoothSnooze) { _ in false }, size: NSSize(width: 600, height: 760), dark: dark,
+        to: "\(out)/plugins-intro-bt\(dark ? "-dark" : "").png")
+    }
     try snapshot(
-      features(), size: NSSize(width: 600, height: 1000), dark: false,
-      to: "\(out)/plugins-features-added.png")
+      intro(.keepAwake) { _ in true }, size: NSSize(width: 600, height: 760), dark: false,
+      to: "\(out)/plugins-intro-awake.png")
+    prefs.set(false, forKey: Feature.island.prefsKey)
+    try snapshot(
+      intro(.island) { $0 == .automation ? nil : $0 == .calendar },
+      size: NSSize(width: 600, height: 900), dark: false,
+      to: "\(out)/plugins-intro-island.png")
+    prefs.set(true, forKey: Feature.keepAwake.prefsKey)
+    try snapshot(
+      intro(.keepAwake) { _ in true }, size: NSSize(width: 600, height: 760), dark: false,
+      to: "\(out)/plugins-intro-awake-added.png")
+    prefs.set(KeepAwakePlan.Schedule(isOn: true).encoded, forKey: Prefs.keepAwakeSchedule)
+    for dark in [false, true] {
+      try snapshot(
+        KeepAwakeTab(keepAwake: KeepAwake(defaults: prefs)).defaultAppStorage(prefs),
+        size: NSSize(width: 600, height: 760), dark: dark,
+        to: "\(out)/plugins-keep-awake\(dark ? "-dark" : "").png")
+    }
+  }
+
+  /// 设置 › 睡眠关蓝牙整页：没授权、默认两个开关（还没关过），已授权、每次睡眠都关（上次关、开过），浅 / 深。几秒，图以 bt- 开头：
+  /// -only-testing:'KittyToolsTests/SnapshotProbeTests/bluetoothSnoozeSettings()'。偏好读临时偏好域
+  @Test(.enabled(if: directory != nil)) func bluetoothSnoozeSettings() throws {
+    let out = try #require(Self.directory)
+    try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+    Prefs.registerDefaults()
+    let name = "kitty-snapshot-bt-\(UUID().uuidString)"
+    let prefs = try #require(UserDefaults(suiteName: name))
+    defer { prefs.removePersistentDomain(forName: name) }
+    prefs.set(true, forKey: Feature.bluetoothSnooze.prefsKey)
+    for dark in [false, true] {
+      try snapshot(
+        BluetoothSnoozeTab(requestAccess: {}, authorized: false).defaultAppStorage(prefs),
+        size: NSSize(width: 640, height: 640), dark: dark,
+        to: "\(out)/bt-settings\(dark ? "-dark" : "").png")
+    }
+    prefs.set(false, forKey: Prefs.bluetoothSnoozeLidOnly)
+    let off = Date.now.addingTimeInterval(-3600).timeIntervalSince1970
+    prefs.set(off, forKey: Prefs.bluetoothSnoozeOffAt)
+    prefs.set(off + 1500, forKey: Prefs.bluetoothSnoozeOnAt)
+    try snapshot(
+      BluetoothSnoozeTab(requestAccess: {}, authorized: true).defaultAppStorage(prefs),
+      size: NSSize(width: 640, height: 640), dark: false, to: "\(out)/bt-settings-any.png")
+  }
+
+  /// 设置 › 平滑滚动整页：没授权、默认值（浅 / 深），授权了、调过两条滑块、上下反向、停用了两个 App、系统关着「自然滚动」、
+  /// 有别的改滚轮的工具开着（橙字）。几秒，图以 smooth- 开头：-only-testing:'KittyToolsTests/SnapshotProbeTests/smoothScrollSettings()'。
+  /// 偏好读临时偏好域；授权、别的工具、系统方向、停用名单都传固定的
+  @Test(.enabled(if: directory != nil)) func smoothScrollSettings() throws {
+    let out = try #require(Self.directory)
+    try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+    Prefs.registerDefaults()
+    let name = "kitty-snapshot-smooth-\(UUID().uuidString)"
+    let prefs = try #require(UserDefaults(suiteName: name))
+    defer { prefs.removePersistentDomain(forName: name) }
+    prefs.set(true, forKey: Feature.smoothScroll.prefsKey)
+    let scroll = SmoothScroll(defaults: prefs, observes: false)
+    for dark in [false, true] {
+      try snapshot(
+        SmoothScrollTab(
+          smoothScroll: scroll, authorized: false, others: [], natural: true, excluded: []
+        ).defaultAppStorage(prefs),
+        size: NSSize(width: 640, height: 1000), dark: dark,
+        to: "\(out)/smooth-settings\(dark ? "-dark" : "").png")
+    }
+    prefs.set(80, forKey: Prefs.smoothScrollStrength)
+    prefs.set(150, forKey: Prefs.smoothScrollSpeed)
+    prefs.set(true, forKey: Prefs.smoothScrollReverseVertical)
+    try snapshot(
+      SmoothScrollTab(
+        smoothScroll: scroll, authorized: true, others: ["另一个滚轮工具"], natural: false,
+        excluded: ["com.apple.TextEdit", "com.apple.Preview"]
+      ).defaultAppStorage(prefs),
+      size: NSSize(width: 640, height: 1100), dark: false, to: "\(out)/smooth-settings-any.png")
+  }
+
+  /// App 快捷键（插件，2026-11-17）：面板（访达那样的几张卡、两段式和 🌐 的键帽，浅 / 深；221 条要竖着滚；一条都没有、
+  /// 没响应、读不到、没读完）和 设置 › App 快捷键（没授权 / 已授权、关了按住 ⌘，浅 / 深）。几秒，图以 app-shortcuts- 开头：
+  /// -only-testing:'KittyToolsTests/SnapshotProbeTests/appShortcuts()'。偏好读临时偏好域
+  @Test(.enabled(if: directory != nil)) func appShortcuts() throws {
+    let out = try #require(Self.directory)
+    try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+    Prefs.registerDefaults()
+    let screen = NSSize(width: 1470, height: 920)
+    let icon = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app")
+    func shot(_ name: String, _ reading: MenuReading, app: String = "访达", dark: Bool = false) throws
+    {
+      let model = AppShortcutsModel()
+      model.load(reading, name: app, icon: icon, available: screen)
+      try snapshot(
+        AppShortcutsView(model: model), size: model.layout.size, dark: dark,
+        to: "\(out)/app-shortcuts-\(name).png")
+    }
+    var finder = MenuReading()
+    let menus: [(String, [(String, String, [String])])] = [
+      ("访达", [("设置", "⌘,", []), ("清倒废纸篓", "⇧⌘⌫", []), ("清倒废纸篓", "⌥⇧⌘⌫", []), ("隐藏访达", "⌘H", [])]),
+      (
+        "文件",
+        [
+          ("新建访达窗口", "⌘N", []), ("新建文件夹", "⇧⌘N", []), ("新建标签页", "⌘T", []), ("打开", "⌘O", []),
+          ("关闭窗口", "⌘W", []), ("显示简介", "⌘I", []), ("复制", "⌘D", []), ("制作替身", "⌃⌘A", []),
+          ("快速查看", "⌘Y", []), ("移到废纸篓", "⌘⌫", []), ("添加到程序坞", "⌃⇧⌘T", []),
+        ]
+      ),
+      (
+        "编辑",
+        [
+          ("撤销", "⌘Z", []), ("重做", "⇧⌘Z", []), ("剪切", "⌘X", []), ("拷贝", "⌘C", []), ("粘贴", "⌘V", []),
+          ("全选", "⌘A", []), ("开始听写", "🎤", []), ("表情与符号", "🌐E", []),
+        ]
+      ),
+      (
+        "显示",
+        [
+          ("为图标", "⌘1", []), ("为列表", "⌘2", []), ("为分栏", "⌘3", []), ("名称", "⌃⌥⌘1", ["排序方式"]),
+          ("种类", "⌃⌥⌘2", ["排序方式"]), ("显示路径栏", "⌥⌘P", []), ("进入全屏幕", "🌐F", []),
+        ]
+      ),
+      (
+        "前往",
+        [
+          ("返回", "⌘[", []), ("前进", "⌘]", []), ("上层文件夹", "⌘↑", []), ("下载", "⌥⌘L", []),
+          ("应用程序", "⇧⌘A", []),
+          ("前往文件夹", "⇧⌘G", []), ("连接服务器", "⌘K", []),
+        ]
+      ),
+      (
+        "窗口",
+        [
+          ("最小化", "⌘M", []), ("填充", "🌐⌃F", []), ("居中", "🌐⌃C", []),
+          ("左右", "🌐⌃⇧←", ["移动与调整大小"]), ("显示下一个标签页", "⌃⇥", []),
+        ]
+      ),
+      ("帮助", [("键盘快捷键", "⌘K ⌘S", [])]),
+    ]
+    for (bar, (menu, items)) in menus.enumerated() {
+      for (index, item) in items.enumerated() {
+        finder.shortcuts.append(
+          MenuShortcut(
+            menu: menu, path: item.2, title: item.0, keys: item.1, location: [bar + 1, index]))
+      }
+    }
+    for dark in [false, true] { try shot("finder\(dark ? "-dark" : "")", finder, dark: dark) }
+    var small = MenuReading()
+    small.shortcuts = Array(finder.shortcuts.prefix(6))
+    try shot("small", small)
+    var big = MenuReading()
+    for bar in 1...12 {
+      for index in 0..<(bar == 3 ? 60 : 14) {
+        big.shortcuts.append(
+          MenuShortcut(
+            menu: "菜单 \(bar)", path: index % 7 == 3 ? ["子菜单"] : [],
+            title: index % 5 == 0 ? "一个名字很长很长的菜单项会被截断在这里" : "第 \(index + 1) 项",
+            keys: ["⌘S", "⇧⌘F", "⌃⌥⌘↩", "F6", "⌃⇧F7"][index % 5], location: [bar, index]))
+      }
+    }
+    try shot("big", big, app: "Xcode")
+    // 点了搜索框、留住之后：打了「废纸篓」，选中第一条；搜不到
+    for (name, query) in [("search", "废纸篓"), ("search-none", "没有这个")] {
+      let model = AppShortcutsModel()
+      model.load(finder, name: "访达", icon: icon, available: screen)
+      model.isStaying = true
+      model.search(query)
+      try snapshot(
+        AppShortcutsView(model: model), size: model.layout.size, dark: false,
+        to: "\(out)/app-shortcuts-\(name).png")
+    }
+    var unfinished = finder
+    unfinished.finished = false
+    try shot("unfinished", unfinished)
+    try shot("empty", MenuReading(), app: "一个游戏")
+    try shot("unresponsive", MenuReading(shortcuts: [], finished: false), app: "卡住的 App")
+    try shot("unreadable", MenuReading(shortcuts: [], unreadable: true), app: "没有菜单的 App")
+
+    let name = "kitty-snapshot-app-shortcuts-\(UUID().uuidString)"
+    let prefs = try #require(UserDefaults(suiteName: name))
+    defer { prefs.removePersistentDomain(forName: name) }
+    prefs.set(true, forKey: Feature.appShortcuts.prefsKey)
+    for dark in [false, true] {
+      try snapshot(
+        AppShortcutsTab(trusted: false).defaultAppStorage(prefs),
+        size: NSSize(width: 640, height: 640),
+        dark: dark, to: "\(out)/app-shortcuts-settings\(dark ? "-dark" : "").png")
+    }
+    // 换成按住 ⇧（那一行下面多一句输入法的提醒）
+    prefs.set(ModifierTaps.Key.shift.rawValue, forKey: Prefs.appShortcutsHoldKey)
+    try snapshot(
+      AppShortcutsTab(trusted: true).defaultAppStorage(prefs),
+      size: NSSize(width: 640, height: 640),
+      dark: false, to: "\(out)/app-shortcuts-settings-shift.png")
+    prefs.set(false, forKey: Prefs.appShortcutsHold)
+    try snapshot(
+      AppShortcutsTab(trusted: true).defaultAppStorage(prefs),
+      size: NSSize(width: 640, height: 640),
+      dark: false, to: "\(out)/app-shortcuts-settings-off.png")
   }
 
   /// 设置 › 访达右键整页（「压缩时跳过」那一行的小字：填了一串、有一条写错了），推进去的「压缩时跳过」（空着、很多项带写错的，
@@ -4721,10 +5202,16 @@ struct SnapshotProbeTests {
     prefs.set(some, forKey: Prefs.finderCompressSkip)
     for dark in [false, true] {
       try snapshot(
-        FinderMenuTab(extensionEnabled: true).defaultAppStorage(prefs),
-        size: NSSize(width: 640, height: 2300), dark: dark,
+        FinderMenuTab(extensionEnabled: true, finderAutomation: .granted, desktopInICloud: false)
+          .defaultAppStorage(prefs),
+        size: NSSize(width: 640, height: 2400), dark: dark,
         to: "\(out)/finder-settings\(dark ? "-dark" : "").png")
     }
+    // 控制访达拒绝过（按钮「去打开…」）、桌面同步在 iCloud 里（页脚下面一行橙字）
+    try snapshot(
+      FinderMenuTab(extensionEnabled: true, finderAutomation: .denied, desktopInICloud: true)
+        .defaultAppStorage(prefs),
+      size: NSSize(width: 640, height: 560), dark: false, to: "\(out)/finder-settings-icloud.png")
     func page() -> some View { NavigationStack { CompressSkipPage() }.defaultAppStorage(prefs) }
     prefs.removeObject(forKey: Prefs.finderCompressSkip)
     for dark in [false, true] {

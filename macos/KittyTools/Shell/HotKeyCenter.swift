@@ -12,6 +12,8 @@
 // 按 App 停用（2026-11-10，HotKeyBlock）：名单里的 App 在前台时 reload 不注册它停用的那几个（「全部」时连命令的快捷键、
 // 连按两下一起），按键原样到那个 App；看着前台切换（frontChanged），停用的集合变了才重新注册一遍（8 个热键约 0.3 ms）。
 // 录屏倒数的临时 Esc 不受名单管。本 App 的浮层不激活自己，开在名单里的 App 上面时前台还是它、快捷键照样停着。
+// 安全输入（issue #27）：别的 App 开着它时只带 ⌥ 的组合收不到（HotKey.yieldsToSecureInput），注册照样成功、什么都看不出来；
+// 主界面打开时看一眼（secureInputBlock），挡着就在底下写一行是哪个 App。重新注册、停用都记一条日志（类别 hotkeys）。
 
 import AppKit
 import Carbon.HIToolbox
@@ -98,6 +100,14 @@ struct HotKey: Codable, Hashable {
 
   var isReservedEditKey: Bool { Self.reservedEditKeys.contains(self) }
 
+  /// 只带 ⌥（或 ⌥⇧）的字母数字符号键（F 键、连按两下不算）：有进程开着安全输入（别的 App 在输密码）时，系统不把它交给
+  /// 全局热键，按键原样打进前台 App（issue #27，2026-11-16 macOS 27.0.1 实测：⌥J、⌥⇧J 不响应，⌃⌥J、⌘⌥J、⌥F19 照常；
+  /// 安全输入一关马上恢复）。默认键全是这种
+  var yieldsToSecureInput: Bool {
+    modifiers & UInt32(cmdKey | controlKey) == 0 && modifiers & UInt32(optionKey) != 0
+      && Self.functionKeys[Int(keyCode)] == nil
+  }
+
   /// 例如 ⌘⇧V；连按两下是两个同样的修饰键「⌘⌘」（KeyCombo 画成两个键帽）
   var display: String {
     if let doubleTap { return doubleTap.symbol + doubleTap.symbol }
@@ -148,15 +158,17 @@ struct HotKey: Codable, Hashable {
     }
   }
 
-  private static let specialKeys: [Int: String] = [
-    kVK_Space: "空格", kVK_Return: "↩", kVK_Tab: "⇥", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
+  /// 键名（App 快捷键把菜单里只给了键码的快捷键还原成符号时也查这两张，MenuShortcuts）
+  nonisolated static let specialKeys: [Int: String] = [
+    kVK_Space: String(localized: "空格", comment: "按键名：空格键（快捷键里显示成 ⌥空格）"), kVK_Return: "↩",
+    kVK_Tab: "⇥", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
     kVK_Escape: "⎋", kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
     kVK_Home: "↖", kVK_End: "↘", kVK_PageUp: "⇞", kVK_PageDown: "⇟",
     // 小键盘的 Enter / Clear 按布局取出来是控制字符（画不出来）
     kVK_ANSI_KeypadEnter: "⌤", kVK_ANSI_KeypadClear: "⌧",
   ]
 
-  private static let functionKeys: [Int: String] = [
+  nonisolated static let functionKeys: [Int: String] = [
     kVK_F1: "F1", kVK_F2: "F2", kVK_F3: "F3", kVK_F4: "F4", kVK_F5: "F5", kVK_F6: "F6",
     kVK_F7: "F7", kVK_F8: "F8", kVK_F9: "F9", kVK_F10: "F10", kVK_F11: "F11", kVK_F12: "F12",
     kVK_F13: "F13", kVK_F14: "F14", kVK_F15: "F15", kVK_F16: "F16", kVK_F17: "F17",
@@ -169,16 +181,21 @@ enum HotKeyAction: String, CaseIterable {
   case clipboard, selectionTranslate, inputTranslate, screenshotTranslate, launcher, screenshot,
     screenshotLastRegion, recognizeText, translateReplace, screenRecord, audioRecord, pinClipboard,
     statusScreen, noteCapture, noteNew, noteAll, launchpad, shotHistory, island, clothesline, home,
-    reminderNew
+    reminderNew, keepAwake, appShortcuts, noteDeck
 
-  var title: String {
+  var title: String { String(localized: titleResource) }
+
+  /// 能本地化的标题（key 是中文原文；启动器搜索拿它的中文原文和拼音匹配，英文界面也搜得到中文）
+  var titleResource: LocalizedStringResource {
     switch self {
     case .clipboard: "剪贴板历史"
     case .selectionTranslate: "划词翻译"
     case .inputTranslate: "输入翻译"
     case .screenshotTranslate: "截图翻译"
     case .launcher: "启动器"
-    case .screenshot: "截图"
+    // 同一个中文、英文不同（页名「截图」是 Screenshot）：显式 key 分开
+    case .screenshot:
+      LocalizedStringResource("action.screenshot", defaultValue: "截图", comment: "动作：框选截图")
     case .screenshotLastRegion: "截取上次区域"
     case .recognizeText: "识字"
     case .translateReplace: "划词翻译并替换"
@@ -191,21 +208,27 @@ enum HotKeyAction: String, CaseIterable {
     case .noteCapture: "快速记一条"
     case .noteNew: "新建便签"
     case .noteAll: "全部便签"
+    case .noteDeck: "屏幕边缘的便签"
     case .launchpad: "启动台"
     case .island: "打开刘海岛"
     case .home: "打开主界面"
     case .reminderNew: "新建提醒"
+    case .keepAwake: "保持唤醒"
+    case .appShortcuts: "显示 App 快捷键"
     }
   }
 
   /// 菜单栏、启动器里的标题：recording 是这一项正在录（录屏 / 录音录着时叫「停止录屏」/「停止录音」，再按一次快捷键也是停止；
-  /// 录音控制条待录时不算在录，仍叫「录音」，点它 / 再按一次是开始）
-  func title(recording: Bool) -> String {
-    guard recording else { return title }
+  /// 录音控制条待录时不算在录，仍叫「录音」，点它 / 再按一次是开始）。保持唤醒手动开着一段时也算（再按一次是停止）
+  func title(recording: Bool) -> String { String(localized: titleResource(recording: recording)) }
+
+  func titleResource(recording: Bool) -> LocalizedStringResource {
+    guard recording else { return titleResource }
     return switch self {
     case .screenRecord: "停止录屏"
     case .audioRecord: "停止录音"
-    default: title
+    case .keepAwake: "停止保持唤醒"
+    default: titleResource
     }
   }
 
@@ -218,7 +241,8 @@ enum HotKeyAction: String, CaseIterable {
   /// 状态屏的键默认是先出一排预览卡片、选一个再进（Z13a）；设置 › 状态屏打开「按快捷键直接进入排在最前面的状态」时
   /// 进的是列表里的第一个（Z10）
   func rowTitle(statusEntersFirst: Bool) -> String {
-    self == .statusScreen ? (statusEntersFirst ? "进入排在最前面的状态" : "选一个状态进入") : title
+    guard self == .statusScreen else { return title }
+    return statusEntersFirst ? String(localized: "进入排在最前面的状态") : String(localized: "选一个状态进入")
   }
 
   /// nil = 默认不设键（静默替换这类用得少、又容易误触的）
@@ -260,14 +284,20 @@ enum HotKeyAction: String, CaseIterable {
     case .noteCapture: HotKey(keyCode: kVK_ANSI_N, modifiers: optionKey)
     // 新建便签、全部便签不设默认键：从菜单栏、启动器进，要快捷键到 设置 › 快捷键 里自己设
     case .noteNew, .noteAll: nil
+    // 屏幕边缘那叠（第四轮体检 X16）不设默认键：主入口是鼠标靠过去，键给键盘用户自己设
+    case .noteDeck: nil
     // 启动台（第八族）不设默认键：触控板捏合是主入口（系统那项开着时设置页会提示关），快捷键到 设置 › 快捷键 里自己设（SPEC R8）
     case .launchpad: nil
     // 新建提醒（2026-11-04，提醒 D5）不设默认键：打开启动器、填好「提醒 」，要快捷键到 设置 › 快捷键 里自己设
     case .reminderNew: nil
+    // 保持唤醒（第一个插件，2026-11-12 拍板 B2）不设默认键：按一下开（无限期）、再按一下停
+    case .keepAwake: nil
     // 刘海岛（2026-10-26）：刘海屏点刘海就能打开，键给没有刘海的屏用，到 设置 › 快捷键 里自己设
     case .island: nil
     // 主界面（2026-10-29）：主入口是点菜单栏图标，键给把图标藏起来的人自己设
     case .home: nil
+    // App 快捷键（2026-11-17 拍板 B4）：主入口是按住 ⌘，键给不喜欢长按的人自己设
+    case .appShortcuts: nil
     }
   }
 
@@ -299,19 +329,24 @@ enum HotKeyAction: String, CaseIterable {
 
   /// 快捷键页、菜单栏、启动器、引导的分组（N13 / N15：同名同序），只列开着的功能（Feature；macOS 15 上没有启动台）。
   /// 每次现算：功能随时能在设置里开关
-  static var sections: [(title: String, actions: [HotKeyAction])] {
+  static var sections: [Section] {
     visibleSections(enabled: Feature.enabled)
   }
 
+  /// 一节：title 是显示的字，key 是它在目录里的 key（「节标题和唯一那一项同名」按 key 比，不拿显示的字比）
+  typealias Section = (title: String, key: String, actions: [HotKeyAction])
+
   /// 单测喂集合：关着的功能的动作去掉、空了的节去掉；两个功能合一节的（剪贴板与启动器、截图与录制）只剩一个功能时，
   /// 节标题换成它的名字
-  static func visibleSections(enabled: Set<Feature>) -> [(title: String, actions: [HotKeyAction])] {
+  static func visibleSections(enabled: Set<Feature>) -> [Section] {
     allSections.compactMap { section in
       let actions = section.actions.filter { $0.feature.map(enabled.contains) ?? true }
       guard let first = actions.first else { return nil }
       let shared = Set(section.actions.map(\.feature)).count > 1
       let alone = Set(actions.map(\.feature)).count == 1
-      return (shared && alone ? first.feature?.title ?? section.title : section.title, actions)
+      let title =
+        shared && alone ? first.feature.map(\.page.titleResource) ?? section.title : section.title
+      return (String(localized: title), title.key, actions)
     }
   }
 
@@ -326,10 +361,12 @@ enum HotKeyAction: String, CaseIterable {
       .clothesline:
       .screenshot
     case .screenRecord, .audioRecord: .record
-    case .noteCapture, .noteNew, .noteAll: .notes
+    case .noteCapture, .noteNew, .noteAll, .noteDeck: .notes
     case .launchpad: .launchpad
     case .statusScreen: .statusScreen
     case .reminderNew: .reminders
+    case .keepAwake: .keepAwake
+    case .appShortcuts: .appShortcuts
     // 「打开刘海岛」2026-11-13 起归刘海岛插件（原来 nil、一直在）；岛上的提示不归它
     case .island: .island
     case .home: nil
@@ -343,7 +380,7 @@ enum HotKeyAction: String, CaseIterable {
   /// 查重仍然算它（HotKeyRecorder：重新打开时不和别的动作抢同一个组合）
   var isActive: Bool { feature?.isOn ?? true }
 
-  private static let allSections: [(title: String, actions: [HotKeyAction])] = [
+  private static let allSections: [(title: LocalizedStringResource, actions: [HotKeyAction])] = [
     ("剪贴板与启动器", [.clipboard, .launcher]),
     ("翻译", [.selectionTranslate, .inputTranslate, .translateReplace, .screenshotTranslate]),
     // 钉住剪贴板里的图排在最后：菜单栏、启动器里有钉图时紧接着是「隐藏 / 关闭全部钉图」（MenuExtra），钉图的几项挨在一起
@@ -355,7 +392,7 @@ enum HotKeyAction: String, CaseIterable {
       ]
     ),
     // 便签（PLAN §10「便签」F②）：菜单栏、启动器、快捷键页、速查表各一节，三项同名同序
-    ("便签", [.noteCapture, .noteNew, .noteAll]),
+    ("便签", [.noteCapture, .noteNew, .noteAll, .noteDeck]),
     // 提醒（2026-11-04）：菜单栏里这一节同状态屏，只有一项「提醒」带子菜单（AppDelegate.addReminderMenu）。
     // 便签、提醒、状态屏挨着（功能管理拍板 M3，和设置侧栏同序）
     ("提醒", [.reminderNew]),
@@ -364,6 +401,10 @@ enum HotKeyAction: String, CaseIterable {
     // 启动台（第八族，2026-10-18）：和便签分开一节，菜单栏、启动器、快捷键页、速查表里的名字和设置页同名；
     // 2026-11-04 起排在状态屏后面（和程序坞预览一组）
     ("启动台", [.launchpad]),
+    // 插件排在功能后面（同设置侧栏）。保持唤醒：菜单栏里同提醒，只有一项带子菜单（AppDelegate.addKeepAwakeMenu）
+    ("保持唤醒", [.keepAwake]),
+    // App 快捷键（插件，2026-11-17）：排在启动台后面、刘海岛前面（同设置侧栏）
+    ("App 快捷键", [.appShortcuts]),
     // 刘海岛（2026-10-26）：2026-11-13 起归刘海岛插件，没添加时不列
     ("刘海岛", [.island]),
     // 主界面（2026-10-29）：不属于哪个功能、一直在；菜单栏菜单里不列（菜单就是图标的另一半），主界面里也不列它自己
@@ -420,11 +461,15 @@ enum HotKeyAction: String, CaseIterable {
     case .noteNew: "kitty.notes.new"
     // 便签家族的符号（设置页头、速查表那一组也是它）
     case .noteAll: "kitty.notes"
+    // 屏幕边缘那一列（X16）：SF 的侧栏
+    case .noteDeck: "sidebar.right"
     case .launchpad: "kitty.launchpad"
     case .island: "kitty.island"
     // 从菜单栏垂下来的那一块
     case .home: "kitty.home"
     case .reminderNew: SettingsPage.reminders.symbol
+    case .keepAwake: SettingsPage.keepAwake.symbol
+    case .appShortcuts: SettingsPage.appShortcuts.symbol
     }
   }
 
@@ -439,9 +484,11 @@ enum HotKeyAction: String, CaseIterable {
       .pinClipboard, .shotHistory, .clothesline:
       Style.Family.screenshot
     case .statusScreen: Style.Family.statusScreen
-    case .noteCapture, .noteNew, .noteAll: Style.Family.notes
+    case .noteCapture, .noteNew, .noteAll, .noteDeck: Style.Family.notes
     case .launchpad: Style.Family.launchpad
     case .reminderNew: Style.Family.reminders
+    case .keepAwake: Style.Family.keepAwake
+    case .appShortcuts: Style.Family.keyboard
     case .island, .home: Style.Family.general
     }
   }
@@ -514,7 +561,7 @@ enum HotKeyAction: String, CaseIterable {
 
   /// 按偏好重新注册全部热键
   func reload() {
-    suspend()
+    unregisterAll()
     suspended = false
     generation += 1
     installHandlerIfNeeded()
@@ -553,6 +600,31 @@ enum HotKeyAction: String, CaseIterable {
     registerCommands(blocked: block?.blocksCommands == true)
     watchTaps()
     watchTrust(HotKeyAction.allCases.contains { $0.isActive && $0.hotKey?.doubleTap != nil })
+    // 只记个数和错误码（命令的编号可能是用户的脚本名，不记）
+    let actions = failures.map { "\($0.key.rawValue) \($0.value)" }
+    let commands = commandFailures.values.map { "command \($0)" }
+    let failed = (actions + commands).sorted().joined(separator: ", ")
+    Log.hotkeys.notice(
+      "重新注册：\(self.bindings.count) 个动作、\(self.commandBindings.count) 条命令，按 App 停用 \(self.blockedSomething)，没注册上 [\(failed, privacy: .public)]"
+    )
+  }
+
+  /// 此刻挡着快捷键的安全输入（主界面底下那一行）。holder：开着它的 App 的名字（会话字典里记的是负责的那个 App，
+  /// 2026-11-16 实测只在开着时才有这一项）；取不到 nil
+  struct SecureInputBlock: Equatable {
+    var holder: String?
+  }
+
+  /// 有进程开着安全输入、生效的快捷键里又有只带 ⌥ 的（这时它们按了没反应）才有；主界面打开时看一眼，不轮询
+  func secureInputBlock() -> SecureInputBlock? {
+    guard IsSecureEventInputEnabled(),
+      bindings.values.contains(where: \.yieldsToSecureInput)
+        || commandBindings.values.contains(where: \.yieldsToSecureInput)
+    else { return nil }
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    let pid = (session?["kCGSSessionSecureInputPID"] as? NSNumber)?.int32Value
+    return SecureInputBlock(
+      holder: pid.flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName })
   }
 
   /// 命令的快捷键（在各动作之后注册：和动作撞了的是命令这边失败）。blocked：前台 App 停用了全部快捷键，照样记下要注册的
@@ -604,8 +676,13 @@ enum HotKeyAction: String, CaseIterable {
     }
   }
 
-  /// 注销全部（录制快捷键期间，免得按到现有组合就触发）
+  /// 注销全部（录制快捷键、截图框选、状态屏期间，免得按到现有组合就触发）；停的那一方结束时 reload
   func suspend() {
+    Log.hotkeys.notice("停用全部快捷键（录快捷键、框选或状态屏）")
+    unregisterAll()
+  }
+
+  private func unregisterAll() {
     for ref in refs { UnregisterEventHotKey(ref) }
     refs = []
     suspended = true
@@ -674,9 +751,11 @@ enum HotKeyAction: String, CaseIterable {
     fire(UInt32(HotKeyAction.allCases.firstIndex(of: action) ?? 0))
   }
 
-  /// 从 since（开机以来的秒数，同事件的时刻）到 now 之间没按过键盘上的键、鼠标键
-  private static func quiet(since: TimeInterval, now: TimeInterval) -> Bool {
-    let types: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+  /// 从 since（开机以来的秒数，同事件的时刻）到 now 之间没按过键盘上的键、鼠标键（App 快捷键的按住 ⌘ 另算滚轮）
+  static func quiet(
+    since: TimeInterval, now: TimeInterval,
+    types: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+  ) -> Bool {
     let latest =
       types.map {
         CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0)
@@ -746,12 +825,12 @@ enum HotKeyAction: String, CaseIterable {
       modifiers & UInt32(cmdKey | controlKey) == 0 && modifiers & UInt32(optionKey) != 0
     // 15.0–15.1 上只带 ⌥（或 ⌥⇧）的组合返回 -9868（eventInternalErr，M1 实测；以前按 eventHotKeyInvalidErr
     // -9879 判断，从来没对上过），两个都认，但只在组合确实只带 ⌥ 时才这么说
-    if status == needsAccessibility { return "连按两下要「辅助功能」授权" }
+    if status == needsAccessibility { return String(localized: "连按两下要「辅助功能」授权") }
     return switch Int(status) {
     case eventInternalErr where optionOnly, eventHotKeyInvalidErr where optionOnly:
-      "macOS 15.0 / 15.1 不支持只带 ⌥ 的组合，加上 ⌘ 或 ⌃ 再录一次"
-    case eventHotKeyExistsErr: "和本 App 的另一个快捷键重复，没有注册上"
-    default: "没有注册上（错误 \(status)），换一个组合试试"
+      String(localized: "macOS 15.0 / 15.1 不支持只带 ⌥ 的组合，加上 ⌘ 或 ⌃ 再录一次")
+    case eventHotKeyExistsErr: String(localized: "和本 App 的另一个快捷键重复，没有注册上")
+    default: String(localized: "没有注册上（错误 \(status)），换一个组合试试")
     }
   }
 

@@ -135,11 +135,15 @@ final class Launchpad {
       stored: stored, apps: catalog.map(\.ref), defaults: Self.defaultApps(catalog),
       capacity: capacity)
     let layout = plan.layout
-    var notice: (title: String, detail: String?, symbol: String)?
+    var notice: (title: LocalizedStringResource, detail: LocalizedStringResource?, symbol: String)?
     if case .unreadable(let text) = stored {
       // 存过、读不出来：原文另存一份，这次只在内存里用默认排法，**不写盘**（用户第一次改动才写，F27）
       UserDefaults.standard.set(text, forKey: Prefs.launchpadLayoutUnreadable)
-      notice = ("排列读不出来，先按默认排法打开", "原来的排布另存了一份，没有被覆盖", "exclamationmark.triangle")
+      notice = (
+        title: LocalizedStringResource("排列读不出来，先按默认排法打开"),
+        detail: LocalizedStringResource("原来的排布另存了一份，没有被覆盖"),
+        symbol: "exclamationmark.triangle"
+      )
     }
     if case .missing = stored {
       // 第一次打开（还没存过布局）：面板先出，这一帧过去再按系统旧启动台导入（SPEC §3.6 / R9，F31）
@@ -160,6 +164,7 @@ final class Launchpad {
       self?.usage?.boost(for: item, query: query) ?? (0, 0)
     }
     model.onLayoutChange = { [weak self] layout in self?.save(layout) }
+    model.appAliasesText = { UserDefaults.standard.string(forKey: Prefs.launcherAppAliases) ?? "" }
     model.onDeleteApp = { [weak self] app in self?.delete(app) }
     model.folderName = { first, second in
       LaunchpadCatalog.folderName(first: first, second: second)
@@ -212,7 +217,8 @@ final class Launchpad {
     // 岛在面板之后出：面板一 orderFrontRegardless 就盖满屏，先出岛会被盖住（F14）
     let showNotice: (() -> Void)? = notice.map { notice in
       { [weak self] in
-        self?.island?.show(notice.title, detail: notice.detail, symbol: notice.symbol)
+        self?.island?.show(
+          notice.title, detail: notice.detail, symbol: notice.symbol)
       }
     }
     // 捏合建的：提示和第一次自动导入等松手定了打开再做（捏一下又退回去的不该导入布局、挂提示）
@@ -593,7 +599,7 @@ final class Launchpad {
         return
       }
       let layout: LaunchpadLayout
-      let detail: String?
+      let detail: LocalizedStringResource?
       if let result, !result.layout.tiles.isEmpty {
         layout = result.layout.merged(apps: self.catalog.map(\.ref), capacity: capacity)
         detail = result.skipped > 0 ? "跳过 \(result.skipped) 个已经卸掉的 App" : nil
@@ -632,7 +638,7 @@ final class Launchpad {
           self?.usage?.record(item, query: query)
           return
         }
-        self?.island?.show("打不开「\(name)」", detail: detail, tone: .warning)
+        self?.island?.show("打不开「\(name)」", detail: "\(detail)", tone: .warning)
       }
     }
   }
@@ -661,7 +667,7 @@ final class Launchpad {
       self.save(updated)
       model.adopt(catalog: self.catalog)
       model.replace(layout: updated)
-      self.island?.show("已移到废纸篓", detail: app.name, symbol: "trash")
+      self.island?.show("已移到废纸篓", detail: "\(app.name)", symbol: "trash")
     }
   }
 

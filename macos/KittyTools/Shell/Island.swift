@@ -37,6 +37,7 @@ import SwiftUI
   }
 
   struct Content: Equatable {
+    /// 显示的字：换上来时就按当前语言取好（最近的提示里存的也是它）
     var title: String
     var detail: String?
     var tone: Tone
@@ -44,10 +45,30 @@ import SwiftUI
     var leading: Leading
     /// 进行中、且知道做到哪了（0…1：更新包下载、转 GIF、压缩）：标题后面多一条细进度条。nil = 不画
     var fraction: Double?
+    /// 圆底换成这个颜色（不跟语气走；活动自己的颜色：专注模式、日历的颜色），上面的符号是白的
+    var tint: NSColor?
+    /// 认这一条用的（多语言，2026-11-15）：进度、收起、缩进耳朵的编号按它找这一条（progress、dismiss(ifShowing:)），
+    /// 不拿显示出来的字比——两句不同的中文可能译成同一句英文。key + 插进去的值都算
+    var source: LocalizedStringResource
+
+    /// 标题、说明是能本地化的字（调用处的字面量会被抽进目录）；用户的数据（歌名、文件名）传 "\(x)"
+    init(
+      title: LocalizedStringResource, detail: LocalizedStringResource? = nil, tone: Tone,
+      symbol: String, leading: Leading, fraction: Double? = nil
+    ) {
+      self.title = String(localized: title)
+      self.detail = detail.map { String(localized: $0) }
+      self.tone = tone
+      self.symbol = symbol
+      self.leading = leading
+      self.fraction = fraction
+      source = title
+    }
   }
 
   /// 岛上的一个按钮。第一个是最主要的：平时露在行尾，展开后在 × 左边（拍板 B2）
   struct Action {
+    /// 显示的字（建的时候按当前语言取好）
     let title: String
     /// 打开类（在访达中显示、打开系统设置里那一项、跳到设置的某一页）：点岛本身也执行它（拍板 B3）。
     /// 撤销、取消、重试、继续这类是 false，只能点按钮
@@ -57,9 +78,10 @@ import SwiftUI
     let run: () -> Void
 
     init(
-      _ title: String, opens: Bool = false, symbol: String? = nil, run: @escaping () -> Void
+      _ title: LocalizedStringResource, opens: Bool = false, symbol: String? = nil,
+      run: @escaping () -> Void
     ) {
-      self.title = title
+      self.title = String(localized: title)
       self.opens = opens
       self.symbol = symbol
       self.run = run
@@ -90,7 +112,7 @@ import SwiftUI
   /// 长成了卡片：悬停时展开；离开后照旧开着直到收起（进行中的离开就合上，它还要挂着）
   private(set) var isExpanded = false
   /// 「那一张」开着：点刘海、快捷键「打开刘海岛」叫出来的（快捷动作 + 最近的提示，IslandBoard）
-  private(set) var isBoardOpen = false
+  private(set) var isBoardOpen = false { didSet { syncFullScreenAlpha() } }
   /// 没有提示、没开那一张时指针停在刘海上：岛轻轻鼓起一点，告诉你能点
   private(set) var isPeeking = false
   /// 最近的提示：本次启动以来最近 historyLimit 条，新的在前；进行中的不记
@@ -123,6 +145,31 @@ import SwiftUI
   /// 停在耳朵上自动展开最要紧的那个活动（设置 › 刘海岛，默认关：Alcove 是停上去只鼓起、点了才展开——第 2 批
   /// 以为它是悬停展开，做成了默认开，用户 2026-11-14 指出；AppDelegate 跟着偏好给）
   @ObservationIgnored var hoverExpands = false
+  /// 停在刘海上多久自动展开（设置 › 刘海岛，2026-11-17 照 Alcove 能调；默认 hoverExpandDelay）
+  @ObservationIgnored var hoverDelay = Island.hoverExpandDelay
+  /// 提示停多久的倍数（设置 › 刘海岛「提示停多久」，DwellLength；进行中的不算）
+  @ObservationIgnored var dwellScale = 1.0
+
+  /// 提示停多久（设置里三档）
+  enum DwellLength: String, CaseIterable {
+    case short, standard, long
+
+    var scale: Double {
+      switch self {
+      case .short: 0.6
+      case .standard: 1
+      case .long: 1.8
+      }
+    }
+  }
+  /// 音量 / 亮度那一行多久收回（设置 › 刘海岛「音量和亮度」；默认 levelDwell）
+  @ObservationIgnored var levelStay = Island.levelDwell
+  /// 音量 / 亮度的细条用强调色（默认白）、旁边写百分比（默认不写）
+  var levelAccent = false
+  var levelPercent = false
+  /// 刘海屏上的形体描一圈细边（设置 › 刘海岛「描一圈细边」，默认关；2026-11-17 照 Alcove 的对比描边）：深色桌面、
+  /// 全屏的黑底上也看得清岛的轮廓。收着时形体藏在真刘海后面，描边也看不见
+  var outlined = false
   /// 触感（设置 › 刘海岛「触感反馈」，A5）：滑动切歌、展开活动、进度条拖到头时触控板一下。摆出来的岛不给
   @ObservationIgnored var haptics = true
   /// 点到了岛本身（耳朵、刘海）：整座岛缩一下再弹回（C2；IslandView 看它的次数）
@@ -130,7 +177,7 @@ import SwiftUI
   /// 岛上现在是哪个活动的「一瞥」（glance）；不是就是 nil
   @ObservationIgnored private var glancing: String?
   /// 岛上现在是音量 / 亮度的那一行（showLevel）；不是就是 nil
-  private(set) var level: Level?
+  private(set) var level: Level? { didSet { syncFullScreenAlpha() } }
   /// 形体现在按音量 / 亮度提示的样子算（刘海两边各伸出一截、不往下长）。比 level 多留一拍：收回时内容先开始退、形体
   /// 晚两帧才缩，这一拍里 level 已经没了、形体得还是提示的样子——不然会按上一份内容的大小往下鼓出一块空的再缩回
   private(set) var levelShaped = false
@@ -212,6 +259,69 @@ import SwiftUI
   @ObservationIgnored var shapeFrame = CGRect.zero { didSet { syncBackdrop() } }
   /// 展开成大面（卡片、那一张）时四周的渐进模糊（设置 › 刘海岛；IslandBackdrop.swift，私有接口，取不到就没有）
   @ObservationIgnored var blurs = true { didSet { syncBackdrop() } }
+  /// 截图、录屏里不出现（设置 › 刘海岛，默认关；2026-11-17 照 Alcove）：窗口的 sharingType 设成 .none，同触发角的面板
+  @ObservationIgnored var hidesFromCapture = false {
+    didSet { window?.sharingType = hidesFromCapture ? .none : .readOnly }
+  }
+  /// 刘海那块屏上前台 App 全屏时藏起来（设置 › 刘海岛，默认关；2026-11-18 照 Alcove，IslandFullScreen）：岛在刘海屏上时
+  /// 窗口全透明、不接鼠标（AppDelegate 的 isSuppressed 也看它）；跟着指针摆到别的屏上的提示、快捷键叫出来的那一张、
+  /// 音量 / 亮度的提示照常（评审：原来整扇窗口透明，那一张看不见却拿着键盘）。换桌面、换前台 App 时看一眼，全屏的动画要约
+  /// 0.7 秒，再看两次
+  @ObservationIgnored var hidesInFullScreen = false {
+    didSet { if oldValue != hidesInFullScreen { watchFullScreen() } }
+  }
+  @ObservationIgnored private(set) var hiddenForFullScreen = false {
+    didSet { if oldValue != hiddenForFullScreen { syncFullScreenAlpha() } }
+  }
+
+  /// 现在藏着（窗口在刘海屏上、全屏、不是那一张、不是音量 / 亮度提示）
+  private var hidesNow: Bool {
+    guard hiddenForFullScreen, !isBoardOpen, level == nil, let window,
+      let notch = Self.notchScreen
+    else { return false }
+    return window.screen?.frame == notch.frame
+  }
+
+  private func syncFullScreenAlpha() {
+    guard let window else { return }
+    let alpha: CGFloat = hidesNow ? 0 : 1
+    if window.alphaValue != alpha { window.alphaValue = alpha }
+  }
+  @ObservationIgnored private var fullScreenObservers: [NSObjectProtocol] = []
+  @ObservationIgnored private var fullScreenCheck: Task<Void, Never>?
+
+  private func watchFullScreen() {
+    let center = NSWorkspace.shared.notificationCenter
+    for observer in fullScreenObservers { center.removeObserver(observer) }
+    fullScreenObservers = []
+    fullScreenCheck?.cancel()
+    guard hidesInFullScreen, !isStaged else {
+      hiddenForFullScreen = false
+      return
+    }
+    for name in [
+      NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didActivateApplicationNotification,
+    ] {
+      fullScreenObservers.append(
+        center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+          MainActor.assumeIsolated { self?.checkFullScreenSoon() }
+        })
+    }
+    checkFullScreenSoon()
+  }
+
+  private func checkFullScreenSoon() {
+    fullScreenCheck?.cancel()
+    fullScreenCheck = Task { [weak self] in
+      for wait in [Duration.zero, .milliseconds(800), .milliseconds(1600)] {
+        try? await Task.sleep(for: wait)
+        guard !Task.isCancelled, let self else { return }
+        self.hiddenForFullScreen =
+          self.hidesInFullScreen
+          && Self.notchScreen.map { IslandFullScreen.isFullScreen(on: $0) } ?? false
+      }
+    }
+  }
   @ObservationIgnored private var backdrop: IslandBackdrop?
   /// 语气变了（nil = 收起）：菜单栏图标据此呼吸 / 弹一下（StatusItem.reflect）
   @ObservationIgnored var onToneChange: ((Tone?) -> Void)?
@@ -292,6 +402,29 @@ import SwiftUI
   /// 下巴 / 胶囊高度
   static let chin: CGFloat = 36
   static let maxWidth: CGFloat = 460
+
+  /// 收着那一行的标题、详情最宽多少（纯函数，多语言第 9 批）：整行（左右各 18、前导 26、间距 10、进度条、第一个按钮）
+  /// 不超过 maxWidth。详情原来就最宽 280、中间截断，标题不截；英文的长标题（「Finder Menu needs to be turned on once
+  /// in System Settings」）加上详情、按钮会撑出岛被裁掉（中文的长标题、带用户起的名字的也会）。放不下时先把详情压到
+  /// 最窄 120，还不够再截标题的尾巴；放得下时标题不限（nil）、详情 280，和原来一样（中文截图逐像素不变）
+  static func rowRoom(title: String, detail: String?, button: String?, fraction: Bool) -> (
+    title: CGFloat?, detail: CGFloat
+  ) {
+    func width(_ text: String, _ font: NSFont) -> CGFloat {
+      (text as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
+    }
+    var budget = maxWidth - 36 - 26 - 10
+    if fraction { budget -= 56 + 10 }
+    if let button { budget -= width(button, .systemFont(ofSize: 12, weight: .semibold)) + 20 + 10 }
+    let titleWidth = width(title, .systemFont(ofSize: 13, weight: .semibold))
+    guard let detail else { return (titleWidth <= budget ? nil : max(budget, 60), 280) }
+    budget -= 10
+    let detailWidth = min(width(detail, .systemFont(ofSize: 13)), 280)
+    if titleWidth + detailWidth <= budget { return (nil, 280) }
+    let detailRoom = min(detailWidth, max(120, budget - titleWidth))
+    return (max(budget - detailRoom, 60), detailRoom)
+  }
+
   /// 画布（窗口）宽：最宽 460 的岛 + 两侧各 70（耳朵、阴影、渐进模糊往外晕的 68）
   static let canvasWidth: CGFloat = 600
   /// 离开岛后至少再留多久
@@ -325,8 +458,10 @@ import SwiftUI
   /// 指针停在刘海上时岛比刘海宽出、长出多少（每侧 8、往下 5）；停在这一圈里也算停在刘海上
   static let peekGrow = CGSize(width: 8, height: 5)
 
+  /// 标题、说明是能本地化的字：调用处写中文字面量就会被抽进目录；用户的数据（文件名、App 名、出错的原文）传 "\(x)"
   func show(
-    _ title: String, detail: String? = nil, tone: Tone = .success, symbol: String? = nil,
+    _ title: LocalizedStringResource, detail: LocalizedStringResource? = nil,
+    tone: Tone = .success, symbol: String? = nil,
     leading: Leading = .tone, fraction: Double? = nil, actions: [Action] = []
   ) {
     let next = Content(
@@ -406,11 +541,11 @@ import SwiftUI
       open(with: next, settle: settle, seats: level != nil)
     }
     if next.tone == .error, !quiet { shakes += 1 }
-    if next.tone == .progress { collapseLater(next.title) }
+    if next.tone == .progress { collapseLater(next.source) }
     if !quiet { onToneChange?(next.tone) }
     // VoiceOver 不会去读不当 key 的岛：主动播报（一瞥不报：一首歌念一遍太吵）
     if announces {
-      Self.announce([next.title, next.detail].compactMap { $0 }.joined(separator: "，"))
+      Self.post([next.title, next.detail].compactMap { $0 }.joined(separator: Self.comma))
     }
     // 挂着的那条不到点收起（按钮、×、上滑才收）
     if let pinned, next == pinned.content {
@@ -421,8 +556,8 @@ import SwiftUI
     let seconds: Double =
       switch next.tone {
       case .progress: 60
-      case .error: actions.isEmpty ? 3 : 6
-      default: actions.isEmpty ? (next.detail == nil ? 1.4 : 2) : 6
+      case .error: (actions.isEmpty ? 3 : 6) * dwellScale
+      default: (actions.isEmpty ? (next.detail == nil ? 1.4 : 2) : 6) * dwellScale
       }
     if isHovered {
       remaining = .seconds(seconds)
@@ -454,8 +589,12 @@ import SwiftUI
   }
 
   /// 进行中的岛改详情（更新包下载、转 GIF、压缩的百分比；fraction 是同一个进度，细进度条跟着走）：内容不重新出场、不播报
-  /// （一秒几次，旁白会被刷屏），停留重新计时——事情还在做就一直挂着。岛上已经不是这一条（标题对不上、被别的岛换掉了）就不动
-  func progress(_ title: String, detail: String, fraction: Double? = nil) {
+  /// （一秒几次，旁白会被刷屏），停留重新计时——事情还在做就一直挂着。岛上已经不是这一条（标题对不上、被别的岛换掉了）就不动。
+  /// title 和 show 时给的同一个（按 Content.source 认，不比显示的字）
+  func progress(
+    _ title: LocalizedStringResource, detail: LocalizedStringResource, fraction: Double? = nil
+  ) {
+    let detail = String(localized: detail)
     // 已经缩进耳朵的：改活动（卡片展开着就原地换），兜底的 60 s 重新计时
     if var activity = activities.first(where: { $0.id == Self.progressID(title) }) {
       activity.detail = detail
@@ -465,13 +604,13 @@ import SwiftUI
       return
     }
     // 排着还没换上的那条：改它，换上来时就是最新的百分比
-    if var queued = pending, queued.content.title == title, queued.content.tone == .progress {
+    if var queued = pending, queued.content.source == title, queued.content.tone == .progress {
       queued.content.detail = detail
       queued.content.fraction = fraction
       pending = queued
       return
     }
-    guard isOpen, let content, content.title == title, content.tone == .progress,
+    guard isOpen, let content, content.source == title, content.tone == .progress,
       content.detail != detail || content.fraction != fraction
     else { return }
     // 细条刚出现 / 收掉时宽度变一大截，同原地更新的弹簧；平时只是数字在变，不动画
@@ -485,7 +624,8 @@ import SwiftUI
   /// 慢活的「进行中」岛：work 超过 delay 还没做完才出（很快做完的不闪这一下）。做完之后调用方出结果岛就原地换掉它；
   /// 没有结果岛的调用方自己收（dismiss(ifShowing:)）
   func showIfSlow<T>(
-    _ title: String, symbol: String? = nil, after delay: Duration = .milliseconds(300),
+    _ title: LocalizedStringResource, symbol: String? = nil,
+    after delay: Duration = .milliseconds(300),
     _ work: () async -> T
   ) async -> T {
     await Self.whenSlow(
@@ -696,7 +836,8 @@ import SwiftUI
     onClose: @escaping () -> Void
   ) {
     let next = Content(
-      title: title, detail: detail, tone: .info, symbol: symbol, leading: .tone, fraction: nil)
+      title: "\(title)", detail: detail.map { "\($0)" }, tone: .info, symbol: symbol,
+      leading: .tone)
     let wasShowing = isShowingPinned
     let same = pinned?.content == next
     pinned = (next, actions, onClose)
@@ -713,7 +854,7 @@ import SwiftUI
   func nudge() {
     guard isShowingPinned, let content else { return }
     shakes += 1
-    Self.announce([content.title, content.detail].compactMap { $0 }.joined(separator: "，"))
+    Self.post([content.title, content.detail].compactMap { $0 }.joined(separator: Self.comma))
   }
 
   /// 不再挂着（调用方那边处理完了、功能关了）：正显示着就收
@@ -724,11 +865,12 @@ import SwiftUI
     if showing { dismiss() }
   }
 
-  /// 收起标题是 title 的这一条（没有结果岛的进行中提示，调用方做完了自己收）：正显示着就收，排着就丢掉
-  func dismiss(ifShowing title: String) {
+  /// 收起标题是 title 的这一条（没有结果岛的进行中提示，调用方做完了自己收）：正显示着就收，排着就丢掉。
+  /// title 和 show 时给的同一个（按 Content.source 认）
+  func dismiss(ifShowing title: LocalizedStringResource) {
     endActivity(Self.progressID(title))
-    if pending?.content.title == title { pending = nil }
-    if content?.title == title { dismiss() }
+    if pending?.content.source == title { pending = nil }
+    if content?.source == title { dismiss() }
   }
 
   /// 点岛本身：耳朵露着、没别的东西时 = 展开最要紧的那个活动；有打开类的按钮就执行它，没有就什么都不做（点得到时已经展开着）。
@@ -756,7 +898,9 @@ import SwiftUI
       activity?.id == id, isStaged || pointerIsOnNotchScreen, pendingLevel == nil
     else { return }
     apply(
-      Content(title: title, detail: detail, tone: .info, symbol: symbol, leading: leading),
+      Content(
+        title: "\(title)", detail: detail.map { "\($0)" }, tone: .info, symbol: symbol,
+        leading: leading),
       actions: [], quiet: true, announces: false)
     glancing = id
   }
@@ -770,7 +914,7 @@ import SwiftUI
   /// 一瞬的；挂着的提醒收起后会换回来）。不进最近的提示、不播报、菜单栏图标不动
   /// 自己冒出来的那种（耳机连上）：岛上正用着——那一张开着、指针停在带按钮的提示上——时不顶掉它，退回成一条
   /// 普通的提示排着（同 show 的规矩，评审）；别的时候同 showLevel
-  func showNotice(_ next: Level, fallback: String) {
+  func showNotice(_ next: Level, fallback: LocalizedStringResource) {
     let busy = isHovered && content.map { $0.tone != .progress } == true
     if isBoardOpen || busy { return show(fallback, tone: .info, symbol: next.symbol) }
     showLevel(next)
@@ -785,7 +929,7 @@ import SwiftUI
     }
     guard level?.identity == next.identity, content != nil else { return }
     level = next
-    arm(next.stay ?? Self.levelDwell)
+    arm(next.stay ?? levelStay)
   }
 
   func showLevel(_ next: Level) {
@@ -796,7 +940,7 @@ import SwiftUI
     }
     if level != nil, content != nil, level?.kind == next.kind {
       level = next
-      return arm(next.stay ?? Self.levelDwell)
+      return arm(next.stay ?? levelStay)
     }
     let swapsKind = level != nil && content != nil
     guard
@@ -829,13 +973,13 @@ import SwiftUI
     // 活动的卡片开着就收掉它、不留着「展开着」（形体从卡片缩到这一条不走展开的那条弹簧）：都在 apply 里和内容
     // 一起换
     apply(
-      Content(title: next.title, detail: nil, tone: .info, symbol: next.symbol, leading: .tone),
+      Content(title: "\(next.title)", tone: .info, symbol: next.symbol, leading: .tone),
       actions: [], quiet: true, announces: false, level: next)
     // 这一条上没有能点的东西：不算悬停（指针正在被顶掉的卡片上时也放开），窗口不接鼠标——它盖着刘海两边的菜单栏
     hoverCheck?.cancel()
     isHovered = false
     window?.ignoresMouseEvents = true
-    arm(next.stay ?? Self.levelDwell)
+    arm(next.stay ?? levelStay)
   }
 
   /// 出音量 / 亮度提示之前要不要先捏回刘海（纯函数）：从耳朵过来、或者提示换了种类（音量 → 亮度）时捏；岛上空着
@@ -854,6 +998,17 @@ import SwiftUI
 
   /// 岛上现在是音量 / 亮度的提示
   var isShowingLevel: Bool { level != nil && content != nil }
+  /// 刘海两边那种提示现在每侧伸出多宽：出着的（或刚收起、还在淡的）那一条的；专注模式的随名字长短（Level.wing）
+  var levelWing: CGFloat { (level ?? departingLevel)?.wing ?? Self.levelWing }
+
+  /// 专注模式开着、设置 › 刘海岛「跳动条换成专注模式的图标」打开时：正在播放的右耳画它（SystemFocus 给，平时 nil）
+  var focusMark: FocusMark?
+
+  /// 专注模式的符号和颜色（耳朵上替跳动条）
+  struct FocusMark: Equatable {
+    var symbol: String
+    var tint: NSColor
+  }
 
   /// 形体现在按「坐在刘海里」算（seated 只在岛上空着时算数：开着、有耳朵、鼓起时照它们自己的样子）
   var isSeated: Bool { seated && !isOpen && !isShowingWings && !isPeeking }
@@ -970,17 +1125,20 @@ import SwiftUI
   @ObservationIgnored private var collapseTask: Task<Void, Never>?
   @ObservationIgnored private var expiryTask: Task<Void, Never>?
 
-  static func progressID(_ title: String) -> String { "progress:" + title }
+  /// 缩进耳朵的进行中那个活动的编号：key 分开不同的句子（译文可能撞），取出来的字分开同一句插了不同的值
+  static func progressID(_ title: LocalizedStringResource) -> String {
+    "progress:" + title.key + "\u{1F}" + String(localized: title)
+  }
 
   /// 进行中的提示出来了：挂满 3 秒还是它（指针不在上面）就缩进耳朵；指针在上面就等它离开
-  private func collapseLater(_ title: String) {
+  private func collapseLater(_ title: LocalizedStringResource) {
     collapseTask?.cancel()
     guard hasExtras else { return }
     collapseTask = Task { [weak self] in
       try? await Task.sleep(for: Self.progressCollapse)
       while !Task.isCancelled {
         guard let self, let content = self.content, content.tone == .progress,
-          content.title == title
+          content.source == title
         else { return }
         if !self.isHovered, !self.isBoardOpen { return self.collapseProgress(content) }
         try? await Task.sleep(for: .seconds(1))
@@ -994,9 +1152,10 @@ import SwiftUI
     guard hasExtras, canShowWings, self.content == content else { return }
     setActivity(
       Activity(
-        id: Self.progressID(content.title), kind: .progress, title: content.title,
+        id: Self.progressID(content.source), kind: .progress, title: content.title,
         detail: content.detail, symbol: content.symbol,
-        trailing: content.fraction.map { .fraction($0) } ?? .none, actions: actions))
+        trailing: content.fraction.map { .fraction($0) } ?? .none, actions: actions,
+        source: content.source))
     expireProgressLater()
     dismiss()
   }
@@ -1161,8 +1320,11 @@ import SwiftUI
     }
     let heading =
       quickActions.isEmpty && calendarDay != nil && !showsHistory
-      ? "月历" : !showsHistory ? "快捷动作" : quickActions.isEmpty ? "最近的提示" : "最近的提示和快捷动作"
-    guard byKeyboard, let window else { return Self.announce(heading) }
+      ? String(localized: "月历")
+      : !showsHistory
+        ? String(localized: "快捷动作")
+        : quickActions.isEmpty ? String(localized: "最近的提示") : String(localized: "最近的提示和快捷动作")
+    guard byKeyboard, let window else { return Self.post(heading) }
     takeKeyboard(window)
     Self.announce(
       quickActions.isEmpty
@@ -1199,7 +1361,7 @@ import SwiftUI
           count: quickActions.count)
       else { return }
       boardSelection = next
-      Self.announce(quickActions[next].title)
+      Self.post(quickActions[next].title)
     case 36, 76:
       if let index = boardSelection, quickActions.indices.contains(index) {
         perform(quickActions[index], checked: false)
@@ -1326,6 +1488,7 @@ import SwiftUI
     // 直接画成终点的样子（2026-10-26 用户：「首次启动，hover 没有动画效果」）
     if fresh { window.contentView?.layoutSubtreeIfNeeded() }
     window.ignoresMouseEvents = true
+    syncFullScreenAlpha()
     window.orderFrontRegardless()
     watchMouse()
   }
@@ -1507,8 +1670,9 @@ import SwiftUI
       return
     }
     guard hoverExpand == nil else { return }
+    let delay = hoverDelay
     hoverExpand = Task { [weak self] in
-      try? await Task.sleep(for: Self.hoverExpandDelay)
+      try? await Task.sleep(for: delay)
       guard let self, !Task.isCancelled else { return }
       self.hoverExpand = nil
       guard self.isPeeking, self.content == nil, !self.isBoardOpen, !self.isSuppressed() else {
@@ -1546,6 +1710,8 @@ import SwiftUI
     // 拖着时不算进出。兜底：松手那一下没送到窗口（拖着时锁屏、切桌面）就照按键的实际状态放开，不然卡片永远不收
     if isDragging, NSEvent.pressedMouseButtons & 1 == 0 { isDragging = false }
     guard !isDragging else { return }
+    // 全屏时藏着：不接鼠标（不然看不见的岛会吞掉全屏时滑下来的菜单栏上的点击）
+    if hidesNow { return }
     let mouse = NSEvent.mouseLocation
     // 音量 / 亮度的提示上没有能点的东西：不算悬停（不停计时、窗口不接鼠标，底下的菜单栏照常点）
     if isShowingLevel { return }
@@ -1632,6 +1798,7 @@ import SwiftUI
     panel.acceptsMouseMovedEvents = true
     panel.isReleasedWhenClosed = false
     panel.animationBehavior = .none
+    panel.sharingType = hidesFromCapture ? .none : .readOnly
     // 宿主包在普通容器里（setHostedContent）：直接当 contentView 时窗口一改大小就在「更新约束」里绕下去、抛异常崩掉
     // （2026-10-26 屏上复现：先弹提示、再在上面开那一张；测试里还见过窗口被它改成 520 × 64）
     let host = IslandHost(rootView: IslandView(island: self))
@@ -1651,7 +1818,11 @@ import SwiftUI
 
   /// VoiceOver 主动播报（全 App 同一个入口）：焦点一直在搜索框 / 原文框，或者窗口本来就不接鼠标（岛、钉图、飞行卡片），
   /// 看不到焦点的变化要自己说出来
-  static func announce(_ text: String) {
+  /// 能本地化的字：调用处的字面量会被抽进目录；已经是取好的字（标题、用户的数据）用 post
+  static func announce(_ text: LocalizedStringResource) { post(String(localized: text)) }
+
+  /// 播报一段已经取好的字
+  static func post(_ text: String) {
     NSAccessibility.post(
       element: NSApp as Any, notification: .announcementRequested,
       userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
@@ -1663,6 +1834,9 @@ import SwiftUI
   static func hasPlate(_ symbol: String) -> Bool {
     [".circle.fill", ".triangle.fill", ".octagon.fill"].contains { symbol.hasSuffix($0) }
   }
+
+  /// 几段字连成一句时的分隔（播报、读屏的标签）：中文「，」、英文「, 」
+  static var comma: String { String(localized: "list.separator", defaultValue: "，") }
 
   private static func symbol(for tone: Tone) -> String {
     switch tone {
@@ -1722,7 +1896,10 @@ struct IslandView: View {
           wings(geometry)
           levelWings(geometry)
         }
-        .modifier(EdgeRide(width: shape.frame.width, notch: geometry.notchWidth))
+        .modifier(
+          EdgeRide(
+            width: shape.frame.width, notch: geometry.notchWidth, levelWing: island.levelWing)
+        )
         // 减弱动态效果时不挂这条（形体本来就不伸缩；curve 是 nil，挂上会把这棵子树里同一拍的动画清掉）
         .animation(curve, value: reduceMotion ? 0 : shape.frame.width)
       }
@@ -1758,7 +1935,7 @@ struct IslandView: View {
         let shown = island.pinched || island.levelShaped
         let width =
           island.pinched
-          ? notchWidth + 8 : (island.levelShaped ? notchWidth + Island.levelWing * 2 : tucked.width)
+          ? notchWidth + 8 : (island.levelShaped ? notchWidth + island.levelWing * 2 : tucked.width)
         let height = notchHeight + (island.levelShaped ? Island.levelDrop : 0)
         return IslandGeometry(
           frame: CGRect(x: (canvas - width) / 2, y: 0, width: width, height: height),
@@ -1827,7 +2004,9 @@ struct IslandView: View {
   private func backdrop(_ shape: IslandGeometry) -> some View {
     let outline = IslandOutline(shape: shape)
     return outline.fill(.black.opacity(shape.capsule ? 0.92 : 1))
-      .overlay(outline.hairlineBorder(.white.opacity(shape.capsule ? 0.12 : 0)))
+      .overlay(
+        outline.hairlineBorder(.white.opacity(shape.capsule ? 0.12 : island.outlined ? 0.22 : 0))
+      )
       // 音量 / 亮度的提示贴在刘海那一行里，不算展开：没有阴影。
       // ponytail: 没有刘海的屏上有模糊时不画阴影（同第 12 批）——形体离窗口上沿只有 2 pt，又宽又淡的那一圈会在
       // 卡片上方被窗口切成一道平顶；要补就把那块屏上的窗口往上加高（place 的 top、shape 里胶囊的 y 一起改）
@@ -1849,7 +2028,7 @@ struct IslandView: View {
       } else if island.isShowingLevel, let level = island.level {
         // 音量 / 亮度：没有刘海的屏上是一行（换数不重新出场）；刘海屏上画在刘海两边（levelWings），这里不占地方
         if case .capsule = island.geometry {
-          IslandLevelRow(level: level)
+          IslandLevelRow(level: level, accent: island.levelAccent)
             .measured { report($0) }
             .transition(appear)
         }
@@ -1895,7 +2074,7 @@ struct IslandView: View {
       ZStack {
         IslandWings(
           activity: activity, notchWidth: width, notchHeight: height, peeking: island.isPeeking,
-          skip: island.skip
+          skip: island.skip, focusMark: island.focusMark
         )
         .id(activity.id)
         .transition(melt)
@@ -1930,7 +2109,8 @@ struct IslandView: View {
     {
       let fading = island.pinched || !island.isShowingLevel
       IslandLevelWings(
-        level: level, notchWidth: width, notchHeight: height + Island.levelDrop
+        level: level, notchWidth: width, notchHeight: height + Island.levelDrop,
+        accent: island.levelAccent, percent: island.levelPercent
       )
       .modifier(Melt(progress: fading ? 0 : 1, scales: false))
       .animation(.smooth(duration: 0.24), value: fading)
@@ -1999,9 +2179,17 @@ struct IslandView: View {
   }
 
   private func row(_ content: Island.Content) -> some View {
-    HStack(spacing: 10) {
+    let room = Island.rowRoom(
+      title: content.title, detail: content.detail, button: island.actions.first?.title,
+      fraction: content.fraction != nil)
+    return HStack(spacing: 10) {
       IslandLeading(content: content)
-      title(content)
+      // 放得下时不套 frame：排法和原来一模一样
+      if let cap = room.title {
+        title(content).frame(maxWidth: cap, alignment: .leading)
+      } else {
+        title(content)
+      }
       if let activity = island.cardActivity { IslandActivityReading(activity: activity) }
       fractionBar(content)
       if let detail = content.detail {
@@ -2010,7 +2198,7 @@ struct IslandView: View {
           .foregroundStyle(.white.opacity(0.55))
           .lineLimit(1)
           .truncationMode(.middle)
-          .frame(maxWidth: 280, alignment: .leading)
+          .frame(maxWidth: room.detail, alignment: .leading)
       }
       if let first = island.actions.first {
         IslandButton(title: first.title, prominent: false) { island.perform(first) }
@@ -2119,17 +2307,20 @@ struct IslandLeading: View {
         .overlay(shape.hairlineBorder(.white.opacity(0.25)))
     case .tone:
       // 底上的符号：成功 / 警告 / 错误是白的；信息 / 进行中的底是强调色，黄、橙、绿这些亮强调色上要换深色
-      let ink = content.tone == .info || content.tone == .progress ? Style.onBrand : .white
+      let ink =
+        content.tint.map(Self.ink(on:))
+        ?? (content.tone == .info || content.tone == .progress ? Style.onBrand : .white)
+      let plate = content.tint.map { Color(nsColor: $0) } ?? Self.tint(content.tone)
       Group {
         if Island.hasPlate(content.symbol) {
           Image(symbol: content.symbol)
             .symbolRenderingMode(.palette)
-            .foregroundStyle(ink, Self.tint(content.tone))
+            .foregroundStyle(ink, plate)
         } else {
           // 没有圆底变体的符号：垫一个语气色圆。圆是同字号的 circle.fill，和 xxx.circle.fill 的圆一样大（约 18.5 pt）；
           // 符号放进 12 × 12（和系统圆底符号里的那个差不多大），宽的（键盘、带角标的文件夹）跟着缩，不出圆
           Image(systemName: "circle.fill")
-            .foregroundStyle(Self.tint(content.tone))
+            .foregroundStyle(plate)
             .overlay {
               Image(symbol: content.symbol)
                 .resizable()
@@ -2145,6 +2336,14 @@ struct IslandLeading: View {
       .symbolEffect(.bounce, value: content.tone == .success ? content.title : "")
       .frame(width: 22, height: 22)
     }
+  }
+
+  /// 自己颜色的圆底（专注模式、日历的颜色）上的符号：亮的底（黄、薄荷绿……）用深色，别的用白（评审：黄底白字看不清）
+  static func ink(on color: NSColor) -> Color {
+    guard let rgb = color.usingColorSpace(.sRGB) else { return .white }
+    let luminance =
+      0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
+    return luminance > 0.6 ? .black.opacity(0.85) : .white
   }
 
   static func tint(_ tone: Island.Tone) -> Color {
@@ -2292,6 +2491,8 @@ nonisolated private struct EdgeRide: ViewModifier, Animatable {
   var width: CGFloat
   /// 刘海宽；没有刘海的屏是 nil
   let notch: CGFloat?
+  /// 音量 / 亮度那种提示每侧伸出多宽（专注模式的随名字长短，Island.levelWing）
+  let levelWing: CGFloat
 
   var animatableData: CGFloat {
     get { width }
@@ -2305,7 +2506,7 @@ nonisolated private struct EdgeRide: ViewModifier, Animatable {
           \.islandWingRide, Island.ride(wing: Island.wing, notch: notch, shape: width)
         )
         .environment(
-          \.islandLevelRide, Island.ride(wing: Island.levelWing, notch: notch, shape: width))
+          \.islandLevelRide, Island.ride(wing: levelWing, notch: notch, shape: width))
     } else {
       content
     }

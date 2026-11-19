@@ -1458,12 +1458,12 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
   override func changeColor(_ sender: Any?) {}
 
   /// 右键菜单里「打开链接」那一项的名字
-  static let openLinkTitle = "打开链接"
+  static var openLinkTitle: String { String(localized: "打开链接") }
   /// 右键菜单里插图那一项的名字
-  static let insertImageTitle = "插入图片…"
+  static var insertImageTitle: String { String(localized: "插入图片…") }
   /// 右键菜单里「任务状态」「文字颜色」两个子菜单的名字
-  static let taskStateTitle = "任务状态"
-  static let colorTitle = "文字颜色"
+  static var taskStateTitle: String { String(localized: "任务状态") }
+  static var colorTitle: String { String(localized: "文字颜色") }
 
   /// ⌃↩：把正文的右键菜单弹在光标旁边（键盘用户选任务状态、文字颜色）
   func popUpContextMenu() {
@@ -1628,7 +1628,7 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
     }
     menu.addItem(.separator())
     let plain = NSMenuItem(
-      title: "默认颜色", action: #selector(setColorFromMenu(_:)), keyEquivalent: "")
+      title: String(localized: "默认颜色"), action: #selector(setColorFromMenu(_:)), keyEquivalent: "")
     plain.target = self
     plain.tag = -1
     plain.state = !current.mixed && current.color == nil && selection.length > 0 ? .on : .off
@@ -1731,7 +1731,7 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
   // MARK: 加标记（⌘B ⌘I ⇧⌘X ⌘E）、粘贴网址成链接
 
   /// 右键菜单里那一项的名字
-  static let formatTitle = "格式"
+  static var formatTitle: String { String(localized: "格式") }
 
   /// 这个按键是不是四个加标记的键之一（修饰键只比 ⌘⌃⌥⇧、不看大写锁定；按字认，同各浮层的 ⌘C ⌘V）
   static func wrap(for event: NSEvent) -> NoteMarkdown.Wrap? {
@@ -1744,6 +1744,14 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
   /// ⌘B ⌘I ⇧⌘X ⌘E：窗口把 ⌘ 组合沿着视图树问一遍（在主菜单之前；那叠、浮动便签的面板先问过自己的键，
   /// 都没接这四个），焦点在自己身上才接。输入法组字期间吞掉、不做事（键盘在输入法手里）；代码块里响一声（format）
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    // ⌥⇧⌘V 粘贴为纯文本（X4：Markdown 开着时 ⌘V 会把网页、文稿的格式转成 Markdown，这个键照旧只要字）
+    if event.modifierFlags.intersection([.command, .option, .shift, .control])
+      == [.command, .option, .shift], event.charactersIgnoringModifiers?.lowercased() == "v",
+      window?.firstResponder === self, isEditable
+    {
+      if !hasMarkedText() { pasteAsPlainText(nil) }
+      return true
+    }
     guard let wrap = Self.wrap(for: event), window?.firstResponder === self, isEditable else {
       return super.performKeyEquivalent(with: event)
     }
@@ -1816,7 +1824,7 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
     }
     // 链接和加标记的几个放一组（R5 的顺序），块格式在分节线后面
     add(
-      "链接", #selector(insertLinkFromMenu(_:)), tag: FormatTag.link.rawValue,
+      String(localized: "链接"), #selector(insertLinkFromMenu(_:)), tag: FormatTag.link.rawValue,
       enabled: isEditable && !inCode && !crossing)
     submenu.addItem(.separator())
     let blockFormats: [(NoteMarkdown.BlockFormat, FormatTag)] = [
@@ -1835,11 +1843,11 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
         enabled: isEditable && !inCode, checked: checked)
     }
     add(
-      "代码块", #selector(toggleCodeBlock(_:)), tag: FormatTag.codeBlock.rawValue,
+      String(localized: "代码块"), #selector(toggleCodeBlock(_:)), tag: FormatTag.codeBlock.rawValue,
       enabled: isEditable && spot != .straddles, checked: spot == .inside)
     submenu.addItem(.separator())
     add(
-      "清除格式", #selector(clearFormatFromMenu(_:)), tag: FormatTag.clear.rawValue,
+      String(localized: "清除格式"), #selector(clearFormatFromMenu(_:)), tag: FormatTag.clear.rawValue,
       enabled: isEditable && !inCode && selection.length > 0)
     let item = NSMenuItem(title: Self.formatTitle, action: nil, keyEquivalent: "")
     item.submenu = submenu
@@ -1942,8 +1950,39 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
   override func paste(_ sender: Any?) {
     if pasteImages(from: pasteboard) { return }
     if pasteLink(from: pasteboard) { return }
-    // ③ 有非空的纯文字：**显式按 .string 读**（不让系统按 readablePasteboardTypes 的顺序挑中图片类型，
-    // 见 F5）。别的 App 里 U+FFFC 是一张图的占位，贴进来没有意义，去掉
+    // ③½ 网页、文稿里带格式的字（X4）：Markdown 开着、不在代码块里时转成 Markdown 粘（链接、粗体、列表、标题留着）
+    if theme.markdown, !touchesCodeBlock(selectedRange()),
+      !(pasteboard.string(forType: .string) ?? "").isEmpty,
+      let markdown = NoteRichPaste.markdown(from: pasteboard),
+      let text = textStorage?.string as NSString?
+    {
+      // 围栏得独占一行：粘在一行中间时前后补换行
+      let range = selectedRange()
+      let previous =
+        range.location > 0
+        ? text.substring(with: NSRange(location: range.location - 1, length: 1)).first : nil
+      let end = NSMaxRange(range)
+      let next =
+        end < text.length ? text.substring(with: NSRange(location: end, length: 1)).first : nil
+      let fitted = NoteRichPaste.fitting(markdown, after: previous, before: next)
+      replaceSelection(
+        with: NSAttributedString(string: fitted, attributes: baseAttributes), at: range)
+      return
+    }
+    pastePlainText()
+  }
+
+  /// ⌥⇧⌘V、右键「粘贴为纯文本」：只要字（不转 Markdown、不粘成链接；图片照常走上面那条路时才有）
+  override func pasteAsPlainText(_ sender: Any?) {
+    guard isEditable else { return }
+    // 剪贴板里没有字（只有图）：照常粘贴（存图、插图）
+    guard !(pasteboard.string(forType: .string) ?? "").isEmpty else { return paste(sender) }
+    pastePlainText()
+  }
+
+  /// ③ 有非空的纯文字：**显式按 .string 读**（不让系统按 readablePasteboardTypes 的顺序挑中图片类型，
+  /// 见 F5）。别的 App 里 U+FFFC 是一张图的占位，贴进来没有意义，去掉。没有字交给父类 / 拖放那条路
+  private func pastePlainText() {
     if let raw = pasteboard.string(forType: .string), !raw.isEmpty {
       let text = raw.replacingOccurrences(of: "\u{FFFC}", with: "")
       guard !text.isEmpty else { return }
@@ -1952,7 +1991,7 @@ final class NoteTextView: NSTextView, NSTextStorageDelegate, NSLayoutManagerDele
       return
     }
     if pasteboard.name == .general {
-      super.paste(sender)
+      super.paste(nil)
     } else {
       _ = readSelection(from: pasteboard)
     }

@@ -38,8 +38,12 @@ struct NotesTab: View {
   @AppStorage(Prefs.notesDeckOverFullScreen) private var overFullScreen = false
   @AppStorage(Prefs.notesDeckNoteSize) private var noteSize = NoteDeckOptions.NoteSize.medium
 
-  private static let fontTitles = [13: "小", 15: "标准", 17: "大", 20: "特大"]
-  private static let senseTitles = [8: "窄", 14: "标准", 28: "宽", 44: "很宽"]
+  private static let fontTitles: [Int: LocalizedStringResource] = [
+    13: "小", 15: "标准", 17: "大", 20: "特大",
+  ]
+  private static let senseTitles: [Int: LocalizedStringResource] = [
+    8: "窄", 14: "标准", 28: "宽", 44: "很宽",
+  ]
 
   var body: some View {
     // 关着时（Feature）变灰；Markdown 导出、导入管的是已有的便签，照常能用
@@ -49,7 +53,7 @@ struct NotesTab: View {
           // 横排单选包进 LabeledContent：贴着右边线
           radios("正文字号", "全部便签窗口、屏幕边缘和浮在屏幕上的便签里正文的大小", selection: $fontSize) {
             ForEach(Prefs.notesFontSizeChoices, id: \.self) {
-              Text(Self.fontTitles[$0] ?? "\($0)").tag($0)
+              Text(Self.fontTitles[$0] ?? "\(String($0))").tag($0)
             }
           }
           radios("行距", "全部便签窗口、屏幕边缘和浮在屏幕上的便签里正文一行一行之间隔多远", selection: $lineSpacing) {
@@ -59,9 +63,10 @@ struct NotesTab: View {
             Text("Markdown 样式")
             // verbatim：SwiftUI 的 Text 自己会把字面量里的 ** ` [] 当 Markdown 画掉，这里要原样写给人看
             Text(
-              verbatim:
-                "# 标题、**粗体**、*斜体*、`代码`、[链接](地址)、三个反引号围起来的代码块，这些写法直接显示成样式，标记只在光标所在的那一行露出来"
-            )
+              verbatim: String(
+                localized:
+                  "# 标题、**粗体**、*斜体*、`代码`、[链接](地址)、三个反引号围起来的代码块，这些写法直接显示成样式，标记只在光标所在的那一行露出来"
+              ))
           }
         } header: {
           Text("便签")
@@ -106,7 +111,7 @@ struct NotesTab: View {
           "便签存在这台 Mac 上，和剪贴板历史分开：清空历史、保留天数都碰不到它。每天自动备份一份，留最近 7 份（正文里的图片跟着一起备）。删掉的便签在「最近删除」里留 \(NoteStore.trashDays) 天。设置 › 通用 里的导出与导入带便签的文字、不带图片；要连图片一起带走、或者拿别的工具看，用上面的 Markdown 导出。在几台 Mac 之间同步到 设置 › 通用「同步」里选文件夹。"
         )
       }
-      PluginRemoveSection(plugin: .notes)
+      PluginAboutSection(plugin: .notes)
     }
     .formStyle(.grouped)
   }
@@ -123,8 +128,8 @@ struct NotesTab: View {
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
     panel.canCreateDirectories = true
-    panel.prompt = "导出到这里"
-    panel.message = "选一个文件夹，里面会新建「\(NoteMarkdownFiles.folderName())」"
+    panel.prompt = String(localized: "导出到这里")
+    panel.message = String(localized: "选一个文件夹，里面会新建「\(NoteMarkdownFiles.folderName())」")
     isTransferring = true
     panel.begin { response in
       guard response == .OK, let parent = panel.url else {
@@ -141,13 +146,15 @@ struct NotesTab: View {
         isTransferring = false
         if let failure = result.failure {
           island?.show(
-            "导出到一半", detail: failure, tone: .error, symbol: "exclamationmark.triangle.fill")
+            "导出到一半", detail: "\(failure)", tone: .error, symbol: "exclamationmark.triangle.fill")
           return
         }
-        var detail = "「\(result.folderName)」"
-        if result.missingImages > 0 { detail += " · \(result.missingImages) 张图片不在，没导出" }
+        var detail = String(localized: "「\(result.folderName)」")
+        if result.missingImages > 0 {
+          detail += " · " + String(localized: "\(result.missingImages) 张图片不在，没导出")
+        }
         island?.show(
-          "已导出 \(result.count) 条便签", detail: detail,
+          "已导出 \(result.count) 条便签", detail: "\(detail)",
           symbol: "square.and.arrow.up.circle.fill",
           actions: result.folder.map { [Island.Action.reveal($0)] } ?? [])
       }
@@ -161,8 +168,8 @@ struct NotesTab: View {
     panel.canChooseDirectories = true
     panel.canChooseFiles = true
     panel.allowsMultipleSelection = true
-    panel.prompt = "导入"
-    panel.message = "选一个文件夹，或者多选 .md / .markdown / .txt 文件"
+    panel.prompt = String(localized: "导入")
+    panel.message = String(localized: "选一个文件夹，或者多选 .md / .markdown / .txt 文件")
     panel.allowedContentTypes =
       [.plainText]
       + ["md", "markdown"].compactMap {
@@ -212,13 +219,32 @@ struct NotesTab: View {
         if !adoption.saved {
           island?.show("便签没存上", detail: "导入的内容在内存里，稍后会自动再试", tone: .warning)
         } else if message.warning {
-          island?.show(message.title, detail: message.detail, tone: .warning)
+          island?.show("\(message.title)", detail: message.detail.map { "\($0)" }, tone: .warning)
         } else {
+          // 一下导进来一大批、导错了地方（X6）：岛上「撤回导入」把新加的整批放进最近删除（更新了的不动——被换下的
+          // 那一版已经另存在最近删除里了）
+          let added = adoption.addedIDs
           island?.show(
-            message.title, detail: message.detail, symbol: "square.and.arrow.down.circle.fill")
+            "\(message.title)", detail: message.detail.map { "\($0)" },
+            symbol: "square.and.arrow.down.circle.fill",
+            actions: added.isEmpty
+              ? []
+              : [.init("撤回导入") { NotesTab.withdraw(added, in: store, island: island) }])
         }
       }
     }
+  }
+
+  /// 「撤回导入」（X6）：这次新加的、还没删的整批放进最近删除（30 天里能放回），岛上说一句
+  static func withdraw(_ ids: [String], in store: NoteStore, island: Island?) {
+    // 永久删了的（note 是 nil）不算（评审 A13）
+    let live = ids.filter { store.note($0).map { $0.deletedAt == nil } ?? false }
+    guard !live.isEmpty else { return }
+    let now = Date.now
+    store.updateAll(live, now: now) { $0.deletedAt = Note.stamp(now) }
+    island?.show(
+      "已撤回导入的 \(live.count) 条", detail: "在「最近删除」里留 \(NoteStore.trashDays) 天",
+      symbol: "trash.circle.fill")
   }
 
   // MARK: 屏幕边缘
@@ -257,7 +283,7 @@ struct NotesTab: View {
         .pickerStyle(.segmented)
         radios("感应范围", "鼠标离屏幕边缘多近就展开", selection: $sense) {
           ForEach(NoteDeckOptions.senseChoices, id: \.self) {
-            Text(Self.senseTitles[$0] ?? "\($0)").tag($0)
+            Text(Self.senseTitles[$0] ?? "\(String($0))").tag($0)
           }
         }
         Toggle(isOn: $alwaysFanned) {
@@ -325,18 +351,18 @@ struct NotesTab: View {
 
   /// 一行横排的单选（3–5 个选项，mac-whisker-settings）：贴着右边线，说明写成副标题
   private func radios<Value: Hashable, Options: View>(
-    _ title: String, _ detail: String, selection: Binding<Value>,
+    _ title: LocalizedStringResource, _ detail: LocalizedStringResource, selection: Binding<Value>,
     @ViewBuilder options: () -> Options
   ) -> some View {
     LabeledContent {
-      Picker(title, selection: selection, content: options)
+      Picker(selection: selection, content: options) { Text(title) }
         .pickerStyle(.radioGroup)
         .horizontalRadioGroupLayout()
         .labelsHidden()
         .fixedSize()
     } label: {
       Text(title)
-      Text(detail)
+      Text(plain: detail)
     }
   }
 }

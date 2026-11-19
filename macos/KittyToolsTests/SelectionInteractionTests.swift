@@ -38,7 +38,8 @@ struct SelectionInteractionTests {
       mode: SelectionView.Mode = .capture, windows: [CGRect] = [], owners: [[pid_t]] = [],
       findsElements: Bool = false, image: CGImage? = nil, hint: String = "",
       session: SelectionSession? = nil,
-      origin: CGPoint = CGPoint(x: -20000, y: -20000), keepsColors: Bool = false
+      origin: CGPoint = CGPoint(x: -20000, y: -20000), keepsColors: Bool = false,
+      showsHint: Bool = true, loupe: Prefs.Loupe = .full
     ) {
       let size = CGSize(width: 1200, height: 800)
       let context = CGContext(
@@ -51,7 +52,7 @@ struct SelectionInteractionTests {
       if findsElements { self.session.findsElements = true }
       view = SelectionView(
         image: image ?? context.makeImage()!, windows: windows, owners: owners,
-        session: self.session, keepsColors: keepsColors)
+        session: self.session, keepsColors: keepsColors, showsHint: showsHint, loupe: loupe)
       styles = UserDefaults(suiteName: styleSuite)!
       view.styleDefaults = styles
       window = KeyWindow(
@@ -605,6 +606,47 @@ struct SelectionInteractionTests {
     #expect(h.view.accessibilityLabel() == "待选，组 300 × 30 像素")
   }
 
+  // ⌥S 盖回截图的截图翻译也认元素（2026-11-16 用户：悬停框出那一块、单击就翻它）：提示里有单击、滚轮、Tab；
+  // 单击用停着的那层去翻（交给翻译的正是那一块），翻完图上贴了译文；不认元素时单击翻整扇窗口
+  @Test func autoTranslateClickTranslatesHoveredElement() async throws {
+    let window = CGRect(x: 100, y: 100, width: 600, height: 500)
+    let row = CGRect(x: 120, y: 300, width: 300, height: 30)
+    let context = try #require(
+      CGContext(
+        data: nil, width: 40, height: 30, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+    let patch = try #require(context.makeImage())
+    for elements in [true, false] {
+      let session = SelectionSession(mode: .capture)
+      session.autoTranslates = true
+      let h = Harness(
+        windows: [window], owners: [[4242]], findsElements: elements, session: session)
+      if elements { _ = h.fakeElements([row, window], names: ["行", "窗口"]) }
+      var asked: [CGSize] = []
+      h.view.translateHandler = { image, _ in
+        asked.append(CGSize(width: image.width, height: image.height))
+        return .init(image: patch)
+      }
+      let original = h.view.image
+      let parts = h.view.accessibilityHelp()?.components(separatedBy: Island.comma) ?? []
+      #expect(
+        parts
+          == ["拖动框选要翻译的文字"]
+          + (elements ? ["单击翻译", "滚轮 换大小", "Tab 只认窗口"] : ["单击翻译窗口"]) + ["Esc 取消"])
+      h.move(CGPoint(x: 200, y: 312))
+      h.click(CGPoint(x: 200, y: 312))
+      let picked = elements ? row : window
+      #expect(h.view.selection == picked)
+      for _ in 0..<500 where h.view.image === original {
+        try await Task.sleep(for: .milliseconds(10))
+      }
+      #expect(asked == [picked.size])
+      #expect(h.view.image !== original)
+    }
+  }
+
   // 问超时的 App 这次框选不再问、只认窗口；本 App 自己的窗口不问；不认元素时提示照旧
   @Test func silentAppsAndOwnWindowsStayWindowOnly() {
     let window = CGRect(x: 100, y: 100, width: 600, height: 500)
@@ -629,6 +671,67 @@ struct SelectionInteractionTests {
     h = Harness(windows: [window], owners: [[4242]])
     #expect(h.view.accessibilityHelp()?.contains("单击选中窗口") == true)
     #expect(h.view.accessibilityHelp()?.contains("Tab") == false)
+  }
+
+  // 第三轮 B1：刚叫醒的 App（也认网页里的元素）还只认到很粗的一块时，指针停着不动到 0.4 s 再问一次、变细；
+  // 遮罩收了不问；本来就细的不重问；刚叫醒时问超时的不记成卡住。假的 App 没有缓存、每次悬停都会问，所以只看
+  // 「停着不动的那段时间里有没有再问」
+  @Test func wokenAppIsAskedAgainWhileCoarse() async throws {
+    let window = CGRect(x: 100, y: 100, width: 600, height: 500)
+    let row = CGRect(x: 120, y: 300, width: 300, height: 30)
+    let point = CGPoint(x: 200, y: 312)
+    let origin = CGPoint(x: -20000, y: -20000)
+    /// ready：网页那棵树建好了没有（没建好只答整块）
+    final class Fake {
+      var asked = 0
+      var ready = false
+    }
+    func woken(views: Bool, ready: Bool = false) -> (Harness, Fake) {
+      let h = Harness(windows: [window], owners: [[4242]], findsElements: true)
+      if views { h.session.views = [h.view] }
+      h.session.hits.woken[4242] = .now
+      let fake = Fake()
+      fake.ready = ready
+      h.session.findElements = { _, _ in
+        fake.asked += 1
+        return .chain(
+          (fake.ready ? [row, window] : [window]).map {
+            ElementFinder.Layer(frame: $0.offsetBy(dx: origin.x, dy: origin.y), name: "组")
+          })
+      }
+      return (h, fake)
+    }
+    var (h, fake) = woken(views: true)
+    h.move(point)
+    #expect(h.view.accessibilityLabel() == "待选，窗口 600 × 500 像素")
+    var before = fake.asked
+    fake.ready = true
+    try await Task.sleep(for: .milliseconds(600))
+    #expect(fake.asked > before)
+    #expect(h.view.accessibilityLabel() == "待选，组 300 × 30 像素")
+    // 遮罩已经收了（finish 清掉 views）：到点不问
+    (h, fake) = woken(views: false)
+    h.move(point)
+    before = fake.asked
+    try await Task.sleep(for: .milliseconds(600))
+    #expect(fake.asked == before)
+    // 本来就认得细：不排
+    (h, fake) = woken(views: true, ready: true)
+    h.move(point)
+    before = fake.asked
+    try await Task.sleep(for: .milliseconds(600))
+    #expect(fake.asked == before)
+    // 刚叫醒时问超时：这次只给窗口，不记成卡住；叫醒很久以前的照旧记
+    h = Harness(windows: [window], owners: [[4242]], findsElements: true)
+    h.session.hits.woken[4242] = .now
+    h.session.findElements = { _, _ in .unresponsive }
+    h.move(point)
+    #expect(h.session.silentApps.isEmpty)
+    h = Harness(windows: [window], owners: [[4242]], findsElements: true)
+    h.session.hits.woken[4242] = .now - .seconds(5)
+    h.session.findElements = { _, _ in .unresponsive }
+    h.move(point)
+    #expect(h.session.silentApps == [4242])
   }
 
   // 进场时光标就在窗口上：洞和粉框从光标处的零尺寸占位长出来，不从屏幕左下角 (0, 0) 飞过来
@@ -1119,6 +1222,78 @@ struct SelectionInteractionTests {
     #expect(h.view.annotations.count == 1)
     let outcome = await h.outcome { h.key(kVK_Escape, "\u{1b}") }
     #expect(outcome == nil)
+  }
+
+  // 设置 › 截图「框选时显示操作提示」（2026-11-17 拍板 A1）：关掉只关开场那条，被挡下时临时说的一句照出
+  @Test func hintSwitchOnlyHidesTheOpeningHint() throws {
+    #expect(Harness().view.hintShowing)
+    let h = Harness(showsHint: false)
+    h.move(CGPoint(x: 300, y: 300))
+    #expect(!h.view.hintShowing)
+    h.drag(CGPoint(x: 300, y: 200), CGPoint(x: 700, y: 240))  // 40 点高：太矮，长截图不开始
+    #expect(!h.view.hintShowing)
+    h.key(kVK_ANSI_S, "s")
+    #expect(h.view.hintShowing)
+    #expect(h.view.announcement == "选区太矮，拉高一点再长截图")
+  }
+
+  // 设置 › 截图「框选时的放大镜」（拍板 B1–B3）：色值卡和格子分开；不显示色值时 C 不取色、不结束截图；
+  // 不显示放大镜时按住 ⌘ 的十字准线照样有；吸管取色时放大镜和色值照常出来，取完回到设置的样子
+  @Test func loupeSettingSplitsMagnifierAndColor() async throws {
+    let full = Harness()
+    full.move(CGPoint(x: 300, y: 300))
+    #expect(full.view.magnifierHeight > SelectionView.loupeSide)
+    let copied = await full.outcome { full.key(kVK_ANSI_C, "c") }
+    guard case .color(let hex)? = copied, hex.hasPrefix("#") else {
+      Issue.record("放大镜和色值时 C 要拷色值：\(String(describing: copied))")
+      return
+    }
+
+    let loupe = Harness(loupe: .loupe)
+    loupe.move(CGPoint(x: 300, y: 300))
+    #expect(loupe.view.showsMagnifier && loupe.view.magnifierHeight == SelectionView.loupeSide)
+    let ignored = await loupe.outcome { loupe.key(kVK_ANSI_C, "c") }
+    guard case .color("没交回结果")? = ignored else {
+      Issue.record("不显示色值时 C 不该结束截图：\(String(describing: ignored))")
+      return
+    }
+
+    let off = Harness(loupe: .off)
+    off.move(CGPoint(x: 300, y: 300))
+    #expect(!off.view.showsMagnifier && !off.view.showsCrosshair)
+    off.modifiers(.command)
+    #expect(off.view.showsCrosshair)
+    off.modifiers([])
+    let none = await off.outcome { off.key(kVK_ANSI_C, "c") }
+    guard case .color("没交回结果")? = none else {
+      Issue.record("不显示放大镜时 C 不该结束截图：\(String(describing: none))")
+      return
+    }
+
+    for h in [loupe, off] {
+      h.makeSelection()
+      h.view.tool = .rectangle
+      let styleBar = try #require(h.styleBar)
+      styleBar.onEyedropper()
+      h.move(CGPoint(x: 500, y: 450))
+      #expect(h.view.showsMagnifier && h.view.magnifierHeight > SelectionView.loupeSide)
+      h.click(CGPoint(x: 500, y: 450))
+      #expect(h.view.style.custom != nil)
+      #expect(h.view.magnifierHeight == SelectionView.loupeSide)
+    }
+  }
+
+  // 截图里按 R 切到录屏（评审）：吸管不取了、放大镜不再挂着截图的色值卡
+  @Test func switchingToRecordDropsColorCard() throws {
+    let h = Harness()
+    h.makeSelection()
+    h.view.tool = .rectangle
+    try #require(h.styleBar).onEyedropper()
+    h.move(CGPoint(x: 500, y: 450))
+    #expect(h.view.magnifierHeight > SelectionView.loupeSide)
+    h.key(kVK_ANSI_R, "r")
+    #expect(h.recordBar != nil)
+    #expect(h.view.magnifierHeight == SelectionView.loupeSide && !h.view.showsMagnifier)
   }
 
   // 截图翻译 / 识字：待选和框选时有放大镜、尺寸只读，⇧ 照样正方形，松手即确认（交回裁好的图）

@@ -12,6 +12,8 @@ import Carbon.HIToolbox
 enum ShotKey: String, CaseIterable {
   case rectangle, ellipse, arrow, line, pen, highlighter, text, counter, mosaic, spotlight
   case copy, save, saveAs, pin, recognize, scroll, record, undo, redo, lastRegion, pickColor
+  /// 标注遮罩（长截图、截图历史的改标注）里的裁剪（第四轮体检 X17，默认 X，Windows 同一个键）
+  case crop
 
   /// 设置页的两组：十种标注工具，出图和别的
   static var tools: [ShotKey] { Annotation.Tool.allCases.map { ShotKey($0) } }
@@ -40,17 +42,18 @@ enum ShotKey: String, CaseIterable {
   var title: String {
     if let tool { return tool.title }
     return switch self {
-    case .copy: "拷贝"
-    case .save: "存储"
-    case .saveAs: "另存为…"
-    case .pin: "钉到屏幕"
-    case .recognize: "识字并拷贝"
-    case .scroll: "长截图"
-    case .record: "录屏"
-    case .undo: "撤销"
-    case .redo: "重做"
-    case .lastRegion: "选中上次的区域"
-    case .pickColor: "复制放大镜里的色值"
+    case .copy: String(localized: "拷贝")
+    case .save: String(localized: "存储")
+    case .saveAs: String(localized: "另存为…")
+    case .pin: String(localized: "钉到屏幕")
+    case .recognize: String(localized: "识字并拷贝")
+    case .scroll: String(localized: "长截图")
+    case .record: String(localized: "录屏")
+    case .undo: String(localized: "撤销")
+    case .redo: String(localized: "重做")
+    case .lastRegion: String(localized: "选中上次的区域")
+    case .pickColor: String(localized: "复制放大镜里的色值")
+    case .crop: String(localized: "裁剪")
     default: ""
     }
   }
@@ -70,6 +73,7 @@ enum ShotKey: String, CaseIterable {
     case .redo: "arrow.uturn.forward"
     case .lastRegion: "arrow.counterclockwise"
     case .pickColor: "eyedropper"
+    case .crop: "crop"
     default: "keyboard"
     }
   }
@@ -94,6 +98,7 @@ enum ShotKey: String, CaseIterable {
       case .redo: (kVK_ANSI_Z, cmdKey | shiftKey)
       case .lastRegion: (kVK_ANSI_D, 0)
       case .pickColor: (kVK_ANSI_C, 0)
+      case .crop: (kVK_ANSI_X, 0)
       default: (kVK_ANSI_1, 0)
       }
     return HotKey(keyCode: code, modifiers: modifiers)
@@ -123,7 +128,12 @@ enum ShotKey: String, CaseIterable {
   var label: String? { key()?.display }
 
   /// 「名字（键）」：工具栏悬停提示；清除了就只写名字
-  func tip(_ name: String) -> String { label.map { "\(name)（\($0)）" } ?? name }
+  func tip(_ name: String) -> String { label.map { Self.tip(name, key: $0) } ?? name }
+
+  /// 「名字（键）」（英文「Name (key)」）：键是定死的那几处（长截图面板）也用它
+  static func tip(_ name: String, key: String) -> String {
+    String(localized: "shot.keyTip", defaultValue: "\(name)（\(key)）", comment: "悬停提示：名字（快捷键）")
+  }
 
   /// 这一下按键对应哪个动作（只比键位和 ⌘ ⌥ ⌃ ⇧，别的位不管）
   static func matching(_ event: NSEvent, in defaults: UserDefaults = .standard) -> ShotKey? {
@@ -176,16 +186,16 @@ enum ShotKey: String, CaseIterable {
     with hotKey: HotKey, for shotKey: ShotKey, in defaults: UserDefaults = .standard
   ) -> String? {
     if isReserved(hotKey) {
-      return "这个键在截图里另有用处（Esc、↩、⌫、Tab、空格、方向键、⌘D、缩放），换一个"
+      return String(localized: "这个键在截图里另有用处（Esc、↩、⌫、Tab、空格、方向键、⌘D、缩放），换一个")
     }
     if let other = allCases.first(where: { $0 != shotKey && $0.key(in: defaults) == hotKey }) {
-      return "和截图里的「\(other.title)」重复"
+      return String(localized: "和截图里的「\(other.title)」重复")
     }
     let globals = HotKeyAction.allCases.filter(\.isAvailable)
     if let action = globals.first(where: {
       $0.resolve { defaults.data(forKey: $0.prefsKey) } == hotKey
     }) {
-      return "和全局快捷键「\(action.title)」重复"
+      return String(localized: "和全局快捷键「\(action.title)」重复")
     }
     return nil
   }

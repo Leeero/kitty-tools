@@ -10,6 +10,10 @@
 // 不做点击穿透（穿透要全局抢一个热键才能再点回来）、不做钉图历史；钉图会出现在之后的截图里。
 // 「钉住剪贴板里的图」（第二轮体检 F1）：从剪贴板取图（只读）、解码、找钉的位置在这里，AppDelegate.pinClipboard 串起来。
 // 剪贴板里是文字时（issue #4，同贴图工具）把文字排成一张卡片图再钉（clipboardText / textCard），之后就是一张普通的钉图。
+// 钉图上选字（2026-11-17 拍板 C1–C5，设置 › 截图「钉图上的字可以直接选」默认开）：鼠标第一次停上来时用系统的实况文本
+// （VisionKit：识别在系统服务里跑，本进程只多十来 MB）认出图里的字，叠一层 ImageAnalysisOverlayView：字上拖动选字、双击选词，
+// 空白处的拖动 / 双击 / 滚轮照旧给钉图（实测选字层不接），按住 ⌥ 在哪拖都是挪；⌘C 有选中的字时拷贝字、⌘A 全选，Esc 先清选区。
+// 右键不用系统那份菜单（拷贝绕过 Paster、动作是私有方法），一律换成钉图自己的。
 
 import AppKit
 import Carbon.HIToolbox
@@ -17,6 +21,7 @@ import ImageIO
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers
+import VisionKit
 
 @Observable final class PinBoard {
   private(set) var panels: [PinPanel] = []
@@ -24,6 +29,16 @@ import UniformTypeIdentifiers
   /// 拷贝 / 快速保存 / 另存为 / 识字并拷贝 / 翻译（动作、图、像素 / 点；.pin 不会来），由 AppDelegate 接到截图的输出上
   @ObservationIgnored var output: @MainActor (RegionSelector.Action, CGImage, CGFloat) -> Void = {
     _, _, _ in
+  }
+  /// 钉图上选中的字拿去做什么（2026-11-17 拍板 C3）
+  enum TextAction { case copy, translate, search }
+  /// 选中的字的拷贝 / 翻译 / 搜索，由 AppDelegate 接（拷贝走 Paster.write(string:record: true) + 刘海岛、翻译开翻译浮窗、
+  /// 搜索用启动器排第一的搜索引擎）；单测接住看，不碰真的剪贴板。查询（系统词典的小窗）钉图自己弹
+  @ObservationIgnored var textOutput: @MainActor (TextAction, String) -> Void = { _, _ in }
+
+  /// 选中的字能不能查询：一行、不超过 40 个字（词典查的就是词和短语；一大段交给它会画成伸出钉图的一长行、什么也查不到）
+  nonisolated static func looksUp(_ text: String) -> Bool {
+    !text.isEmpty && text.count <= 40 && !text.contains(where: \.isNewline)
   }
 
   /// frame：截图时选区的位置（点，全局坐标）。钉图不抢键盘、VoiceOver 的焦点不在它上面：主动播报
@@ -352,9 +367,16 @@ final class PinPanel: NSPanel {
     rect.insetBy(dx: rect.width * (1 - scale) / 2, dy: rect.height * (1 - scale) / 2)
   }
 
+  /// 认出钉图里的字、挂上选字层（鼠标第一次停上来时它自己做；单测直接等它）
+  func prepareText() async { await (contentView as? PinView)?.startText()?.value }
+
+  /// 选中的字（没选中是 nil；单测读）
+  var selectedText: String? { (contentView as? PinView)?.selectedText }
+
   /// 关闭：内容缩到 0.92（以中心为准）并淡出 0.16 s，完了再收窗口
   func fadeOut() {
     finishPopIn()
+    (contentView as? PinView)?.stopText()
     if !Style.reduceMotion, let layer = contentView?.layer {
       let size = layer.bounds.size
       let shrink = CABasicAnimation(keyPath: "transform")
@@ -399,6 +421,12 @@ private final class PinView: NSView {
   private var hovering = false
   /// 每次缩放加一；停手 0.7 s 后只有最后一次负责收起百分比
   private var zoomGeneration = 0
+  /// 选字层（系统的实况文本）：认出字以后才挂上，压在两个圆钮和缩放百分比下面
+  private var textLayer: ImageAnalysisOverlayView?
+  /// 认字（一张钉图只认一次，关钉图时取消）
+  private var analyzing: Task<Void, Never>?
+  /// 所有钉图共用一个识别器（系统建议复用）
+  private static let analyzer = ImageAnalyzer()
 
   init(image: CGImage, size: CGSize, board: PinBoard) {
     self.image = image
@@ -418,11 +446,15 @@ private final class PinView: NSView {
     let side = 22 - 2 * HUDBar.materialInset
     let opacity = circle(
       barButton(
-        NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: "透明度")!,
-        tip: "透明度", action: #selector(showOpacity(_:)), size: CGSize(width: side, height: side)))
+        NSImage(
+          systemSymbolName: "circle.lefthalf.filled",
+          accessibilityDescription: String(localized: "透明度"))!,
+        tip: String(localized: "透明度"), action: #selector(showOpacity(_:)),
+        size: CGSize(width: side, height: side)))
     let close = circle(
       barButton(
-        NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭")!, tip: "关闭",
+        NSImage(systemSymbolName: "xmark", accessibilityDescription: String(localized: "关闭"))!,
+        tip: String(localized: "关闭"),
         action: #selector(close), size: CGSize(width: side, height: side)))
     buttons.spacing = 6
     buttons.setViews([opacity, close], in: .trailing)
@@ -469,6 +501,7 @@ private final class PinView: NSView {
     Task { [weak self] in
       try? await Task.sleep(for: .seconds(0.3))
       guard let self, self.hovering else { return }
+      self.startText()
       // 钉图太小时不放按钮（会盖住图）
       guard self.bounds.width >= 64, self.bounds.height >= 34 else { return }
       self.controls.isHidden = false
@@ -542,6 +575,7 @@ private final class PinView: NSView {
         y: anchor.y - (anchor.y - frame.minY) * ratio,
         width: originalSize.width * scale, height: originalSize.height * scale), display: true)
     window.invalidateShadow()
+    textLayer?.setContentsRectNeedsUpdate()
     showZoom(scale)
   }
 
@@ -563,7 +597,11 @@ private final class PinView: NSView {
   }
 
   override func keyDown(with event: NSEvent) {
-    if Int(event.keyCode) == kVK_Escape { return close() }
+    if Int(event.keyCode) == kVK_Escape {
+      // 先清选中的字，再按才关
+      if let textLayer, textLayer.hasActiveTextSelection { return textLayer.resetSelection() }
+      return close()
+    }
     if !perform(event) { super.keyDown(with: event) }
   }
 
@@ -581,7 +619,7 @@ private final class PinView: NSView {
     let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
     guard
       let command = commands.first(where: {
-        $0.keyCode == Int(event.keyCode) && $0.modifiers == flags
+        $0.available && $0.keyCode == Int(event.keyCode) && $0.modifiers == flags
       })
     else { return false }
     if !event.isARepeat { NSApp.sendAction(command.action, to: self, from: nil) }
@@ -596,52 +634,85 @@ private final class PinView: NSView {
     let keyCode: Int?
     let modifiers: NSEvent.ModifierFlags
     let action: Selector
+    /// 菜单里的第几组（组之间一条分隔线；透明度插在第 2 组最前面）
+    var group = 1
+    /// 这会儿用得上：选中的字那两项只在认出字 / 选中了字时有，翻译功能关着时没有翻译。用不上的不进菜单和读屏，按键也不认
+    var available = true
   }
 
-  /// 拷贝 / 识字并拷贝 / 翻译 / 存储到「桌面」/ 另存为… / 原始大小 / 关闭（体检 B41 C9 D17：截图家族同名同键）
+  /// 选中了字时的拷贝 / 翻译「…」/ 用 X 搜索 / 查询「…」/ 全选文字 ｜ 拷贝 / 识字并拷贝 / 翻译 / 存储到「桌面」/ 另存为… ｜
+  /// 原始大小 ｜ 关闭（体检 B41 C9 D17：截图家族同名同键）。选中了字时 ⌘C 拷贝字，拷贝整张图改叫「拷贝图像」、不带键
   private var commands: [Command] {
-    [
+    let text = selectedText ?? ""
+    let selected = !text.isEmpty
+    // 翻译、查询的标题带上选中的字的开头（同系统菜单），和下面翻译整张图的那项分得开
+    let excerpt = selected ? Self.excerpt(text) : ""
+    // 搜索引擎在设置 › 启动器里：启动器关着时没有这一项（mac-native §1 功能开关）
+    let engine = selected && Feature.launcher.isOn ? WebSearch.primary() : nil
+    return [
       Command(
-        title: "拷贝", key: "c", keyCode: kVK_ANSI_C, modifiers: .command,
+        title: String(localized: "拷贝"), key: "c", keyCode: kVK_ANSI_C, modifiers: .command,
+        action: #selector(copySelectedText), group: 0, available: selected),
+      Command(
+        title: String(localized: "翻译「\(excerpt)」"), key: "", keyCode: nil, modifiers: [],
+        action: #selector(translateSelectedText), group: 0,
+        available: selected && Feature.translate.isOn),
+      Command(
+        title: String(localized: "用 \(engine?.displayName ?? "") 搜索"), key: "", keyCode: nil,
+        modifiers: [], action: #selector(searchSelectedText), group: 0, available: engine != nil),
+      Command(
+        title: String(localized: "查询「\(excerpt)」"), key: "", keyCode: nil, modifiers: [],
+        action: #selector(lookUpSelectedText(_:)), group: 0, available: PinBoard.looksUp(text)),
+      Command(
+        title: String(localized: "全选文字"), key: "a", keyCode: kVK_ANSI_A, modifiers: .command,
+        action: #selector(selectAllText), group: 0,
+        available: Self.selectsText && textLayer.map { !$0.text.isEmpty } ?? false),
+      Command(
+        title: selected ? String(localized: "拷贝图像") : String(localized: "拷贝"),
+        key: selected ? "" : "c", keyCode: kVK_ANSI_C, modifiers: .command,
         action: #selector(copyImage)),
       Command(
-        title: "识字并拷贝", key: "o", keyCode: kVK_ANSI_O, modifiers: [],
+        title: String(localized: "识字并拷贝"), key: "o", keyCode: kVK_ANSI_O, modifiers: [],
         action: #selector(recognizeText)),
       Command(
-        title: "翻译", key: "", keyCode: nil, modifiers: [], action: #selector(translateImage)),
+        title: String(localized: "翻译"), key: "", keyCode: nil, modifiers: [],
+        action: #selector(translateImage), available: Feature.translate.isOn),
       Command(
         title: ScreenshotOutput.saveTitle, key: "s", keyCode: kVK_ANSI_S, modifiers: .command,
         action: #selector(saveImage)),
       Command(
-        title: "另存为…", key: "s", keyCode: kVK_ANSI_S, modifiers: [.command, .shift],
+        title: String(localized: "另存为…"), key: "s", keyCode: kVK_ANSI_S,
+        modifiers: [.command, .shift],
         action: #selector(saveImageAs)),
       Command(
-        title: "原始大小", key: "0", keyCode: kVK_ANSI_0, modifiers: .command,
-        action: #selector(actualSize)),
+        title: String(localized: "原始大小"), key: "0", keyCode: kVK_ANSI_0, modifiers: .command,
+        action: #selector(actualSize), group: 2),
       Command(
-        title: "关闭", key: "w", keyCode: kVK_ANSI_W, modifiers: .command, action: #selector(close)),
+        title: String(localized: "关闭"), key: "w", keyCode: kVK_ANSI_W, modifiers: .command,
+        action: #selector(close), group: 3),
     ]
   }
 
   override func menu(for event: NSEvent) -> NSMenu? {
     let menu = NSMenu()
-    let items = commands.map { command in
+    var group: Int?
+    for command in commands where command.available {
+      if let group, group != command.group { menu.addItem(.separator()) }
+      if command.group == 2, group != 2 {
+        let opacity = NSMenuItem(title: String(localized: "透明度"), action: nil, keyEquivalent: "")
+        opacity.submenu = opacityMenu()
+        menu.addItem(opacity)
+      }
+      group = command.group
       let item = NSMenuItem(
         title: command.title, action: command.action, keyEquivalent: command.key)
       item.keyEquivalentModifierMask = command.modifiers
       item.target = self
-      // 翻译这个功能关着（Feature）：藏起来（不从列表里拿掉——下面按位置分组）
-      item.isHidden = command.action == #selector(translateImage) && !Feature.translate.isOn
-      return item
+      if command.action == #selector(lookUpSelectedText(_:)) {  // 词典小窗挂在这次右键按下的地方
+        item.representedObject = NSValue(point: convert(event.locationInWindow, from: nil))
+      }
+      menu.addItem(item)
     }
-    items[0..<5].forEach(menu.addItem)
-    menu.addItem(.separator())
-    let opacity = NSMenuItem(title: "透明度", action: nil, keyEquivalent: "")
-    opacity.submenu = opacityMenu()
-    menu.addItem(opacity)
-    menu.addItem(items[5])
-    menu.addItem(.separator())
-    menu.addItem(items[6])
     return menu
   }
 
@@ -649,17 +720,19 @@ private final class PinView: NSView {
 
   override func isAccessibilityElement() -> Bool { true }
   override func accessibilityRole() -> NSAccessibility.Role? { .image }
-  override func accessibilityLabel() -> String? { "钉图" }
+  override func accessibilityLabel() -> String? {
+    String(localized: "shot.pin.name", defaultValue: "钉图", comment: "名词：钉在屏幕上的一张截图（旁白）")
+  }
 
   override func accessibilityValue() -> Any? {
     let size = window?.frame.size ?? bounds.size
     let percent = Int(((panel?.opacity ?? 1) * 100).rounded())
-    return "\(Int(size.width.rounded())) × \(Int(size.height.rounded())) 点，透明度 \(percent)%"
+    let (width, height) = (String(Int(size.width.rounded())), String(Int(size.height.rounded())))
+    return String(localized: "\(width) × \(height) 点，透明度 \(percent)%")
   }
 
   override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
-    commands.filter { $0.action != #selector(translateImage) || Feature.translate.isOn }.map {
-      command in
+    commands.filter(\.available).map { command in
       let action = command.action
       return NSAccessibilityCustomAction(name: command.title) { [weak self] in
         MainActor.assumeIsolated { NSApp.sendAction(action, to: self, from: nil) }
@@ -668,6 +741,45 @@ private final class PinView: NSView {
   }
 
   @objc private func copyImage() { board.output(.copy, image, scale) }
+
+  @objc private func copySelectedText() {
+    guard let text = selectedText, !text.isEmpty else { return }
+    board.textOutput(.copy, text)
+  }
+
+  @objc private func translateSelectedText() {
+    guard let text = selectedText, !text.isEmpty else { return }
+    board.textOutput(.translate, text)
+  }
+
+  @objc private func searchSelectedText() {
+    guard let text = selectedText, !text.isEmpty else { return }
+    board.textOutput(.search, text)
+  }
+
+  /// 系统词典的小窗，挂在右键按下的地方（读屏的自定义动作没有位置：钉图正中）
+  @objc private func lookUpSelectedText(_ sender: Any?) {
+    guard let text = selectedText, PinBoard.looksUp(text) else { return }
+    window?.makeKey()
+    let point =
+      ((sender as? NSMenuItem)?.representedObject as? NSValue)?.pointValue
+      ?? CGPoint(x: bounds.midX, y: bounds.midY)
+    showDefinition(
+      for: NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 15)]),
+      at: point)
+  }
+
+  /// 菜单标题里选中的字的开头：换行并成空格，超过 12 个字截断加「…」
+  static func excerpt(_ text: String) -> String {
+    let line = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+    return line.count > 12 ? line.prefix(12) + "…" : line
+  }
+
+  @objc private func selectAllText() {
+    guard let textLayer else { return }
+    let text = textLayer.text
+    textLayer.selectedRanges = [text.startIndex..<text.endIndex]
+  }
   @objc private func saveImage() { board.output(.save, image, scale) }
   @objc private func saveImageAs() { board.output(.saveAs, image, scale) }
   @objc private func recognizeText() { board.output(.recognize, image, scale) }
@@ -699,12 +811,107 @@ private final class PinView: NSView {
         x: frame.minX, y: frame.maxY - originalSize.height, width: originalSize.width,
         height: originalSize.height), display: true)
     window.invalidateShadow()
+    textLayer?.setContentsRectNeedsUpdate()
     showZoom(1)
   }
 
   @objc private func close() {
     if let panel { board.close(panel) }
   }
+}
+
+// MARK: 选字（2026-11-17 拍板 C1–C5）
+
+extension PinView: ImageAnalysisOverlayViewDelegate {
+  /// 设置 › 截图「钉图上的字可以直接选」开着、这台 Mac 支持实况文本
+  private static var selectsText: Bool {
+    UserDefaults.standard.bool(forKey: Prefs.pinSelectsText) && ImageAnalyzer.isSupported
+  }
+
+  /// 选中的字（没选中是 nil）
+  var selectedText: String? {
+    guard let textLayer, textLayer.hasActiveTextSelection else { return nil }
+    return textLayer.selectedText
+  }
+
+  /// 认出图里的字、挂上选字层：鼠标第一次停上来时（mouseEntered 那 0.3 秒之后），一张钉图只认一次（认不出、出错也不再认）。
+  /// 设置关掉后再停上来：摘掉选字层，下次打开再认。
+  /// ponytail: 语种跟系统的首选语言（实测给提示两头难：只给中英会整行丢韩文，不给时一行粗体中文标题偶尔认成拉丁字母），
+  /// 认错了的那几个字用 O 识字（Vision）拷
+  @discardableResult func startText() -> Task<Void, Never>? {
+    guard Self.selectsText else {
+      stopText()
+      if let textLayer, let responder = window?.firstResponder as? NSView,
+        responder.isDescendant(of: textLayer)
+      {
+        window?.makeFirstResponder(self)  // 选过字时按键归选字层里的视图：摘掉之前还给钉图（Esc、O）
+      }
+      textLayer?.removeFromSuperview()
+      textLayer = nil
+      return nil
+    }
+    // 正在关（悬停那 0.3 s 里双击 / Esc 关掉的）：不再认
+    guard let panel, board.panels.contains(where: { $0 === panel }) else { return nil }
+    if let analyzing { return analyzing }
+    let image = image
+    let task = Task { [weak self] in
+      do {
+        let analysis = try await Self.analyzer.analyze(
+          image, orientation: .up, configuration: ImageAnalyzer.Configuration([.text]))
+        guard !Task.isCancelled, analysis.hasResults(for: .text) else { return }
+        self?.attach(analysis)
+      } catch {
+        // 出错（系统服务刚起来、偶尔不答）：下次停上来再认；认出来没字的不再认
+        if !Task.isCancelled { self?.analyzing = nil }
+      }
+    }
+    analyzing = task
+    return task
+  }
+
+  /// 关钉图、关掉设置时：没认完的不认了
+  func stopText() {
+    analyzing?.cancel()
+    analyzing = nil
+  }
+
+  private func attach(_ analysis: ImageAnalysis) {
+    let layer = ImageAnalysisOverlayView()
+    layer.frame = bounds
+    layer.autoresizingMask = [.width, .height]
+    layer.delegate = self
+    layer.preferredInteractionTypes = .textSelection
+    layer.isSupplementaryInterfaceHidden = true  // 系统角上那颗「实况文本」钮不要
+    layer.analysis = analysis
+    addSubview(layer, positioned: .below, relativeTo: controls)
+    textLayer = layer
+  }
+
+  /// 按在字上才归选字层；按住 ⌥ 是挪钉图。空白处的拖动、双击、滚轮选字层本来就不接（实测），照旧落到 mouseDown 这些里
+  func overlayView(
+    _ overlayView: ImageAnalysisOverlayView, shouldBeginAt point: CGPoint,
+    forAnalysisType analysisType: ImageAnalysisOverlayView.InteractionTypes
+  ) -> Bool {
+    let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+    // 设置刚关掉、还没停上来摘掉选字层的这一会儿也不选
+    guard Self.selectsText, overlayView.hasText(at: point), !modifiers.contains(.option) else {
+      return false
+    }
+    panel?.finishPopIn()
+    window?.makeKey()  // 选完 ⌘C、Esc 才归它
+    return true
+  }
+
+  /// 按键一律归钉图（⌘C、⌘A、Esc 看有没有选中的字，见 keyDown / perform）
+  func overlayView(
+    _ overlayView: ImageAnalysisOverlayView, shouldHandleKeyDownEvent event: NSEvent
+  ) -> Bool { false }
+
+  /// 右键换成钉图自己的菜单
+  func overlayView(
+    _ overlayView: ImageAnalysisOverlayView, updatedMenuFor menu: NSMenu, for event: NSEvent,
+    at point: CGPoint
+  ) -> NSMenu { self.menu(for: event) ?? menu }
 }
 
 /// 菜单里的透明度一行：滑块 + 右边的百分比，拖动时钉图跟着变。最低 10%：到 0 钉图就看不见了，
@@ -725,7 +932,7 @@ private final class OpacitySlider: NSView {
     slider.action = #selector(changed)
     // 跟随系统时系统自己取 AccentColor（品牌粉），选了 8 色之一时 AppKit 控件不跟，填充色单独给（mac-whisker §3「颜色」）
     slider.trackFillColor = NSColor(Style.brand)
-    slider.setAccessibilityLabel("透明度")
+    slider.setAccessibilityLabel(String(localized: "透明度"))
     label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
     label.textColor = .secondaryLabelColor
     label.alignment = .right

@@ -1,5 +1,6 @@
 // 设置 › 通用：功能（各功能一个开关，最上面一组，2026-10-21；关掉的功能入口全藏、后台不干活，Shell/Feature.swift。2026-11-07 用户嫌
 // 占了整页，收成一行「功能 ›」写开着几个、关着哪几个，开关推进 FeaturesPage；页头画在自己的 NavigationStack 里，推进时一起换掉）、
+// 语言（跟随系统 / 简体中文 / English，重新打开后生效；Shell/InterfaceLanguage.swift，2026-11-15 多语言第 0 批）、
 // 外观（跟随系统 / 浅色 / 深色三张缩略图）与强调色（跟随系统 + 系统设置那一排 8 色，都是改了立刻生效）、
 // 动效：呼出面板时挤压弹开（剪贴板 / 启动器 / 翻译浮窗共用，2026-09-29 从启动器页挪来；2026-10-03 用户定转正：去掉「实验」、
 // 单独成组，默认仍关）、
@@ -22,6 +23,9 @@ struct GeneralTab: View {
   @AppStorage(Prefs.dockIconOnTahoe) private var dockIconOnTahoe = true
   @AppStorage(Prefs.statusItemStyle) private var statusItemStyle = StatusItem.IconStyle.template
   @AppStorage(Prefs.panelSqueezeEntrance) private var squeezeEntrance = false
+  /// 界面语言（InterfaceLanguage：本 App 自己偏好域里的 AppleLanguages，不注册默认值，@AppStorage 读不到「没存过」）
+  @State private var language = InterfaceLanguage.stored
+  @State private var languageNeedsRelaunch = InterfaceLanguage.needsRelaunch
   @State private var trusted = Permissions.isAccessibilityTrusted
   @State private var screenRecording = Permissions.isScreenRecordingAllowed
   @State private var microphone = Permissions.microphoneStatus
@@ -58,21 +62,67 @@ struct GeneralTab: View {
     }
   }
 
+  /// 显式 key：翻译页也有一组「语言」（英文是复数）。新功能标记（WhatsNew，0.10.0）按它认这一行
+  static let languageLabel = LocalizedStringResource("general.language", defaultValue: "语言")
+
+  /// 语言（拍板 D2）：跟随系统 / 简体中文 / English，写本 App 自己的 AppleLanguages，重新打开后生效
+  private var languageRow: some View {
+    LabeledContent {
+      HStack(spacing: 10) {
+        if languageNeedsRelaunch {
+          Button("现在重新打开") {
+            // 起不了「等退出后重新打开」的那个 sh 就不退：用户自己退出再打开也一样
+            if (try? Updater.relaunch(Bundle.main.bundleURL)) != nil { NSApp.terminate(nil) }
+          }
+        }
+        Picker(selection: $language) {
+          ForEach(InterfaceLanguage.allCases) { Text($0.title).tag($0) }
+        } label: {
+          Text(Self.languageLabel)
+        }
+        .labelsHidden()
+        .fixedSize()
+      }
+    } label: {
+      NewTitle(Self.languageLabel, page: .general, fresh: navigation?.fresh ?? [])
+      Text(
+        languageNeedsRelaunch
+          ? "重新打开 Kitty Tools 后换成新的语言"
+          : "也可以在 系统设置 › 通用 › 语言与地区 › 应用程序 里选")
+    }
+    .onChange(of: language) {
+      // 拨过这一行，「新」就算看过了（光点进这一页不算；WhatsNew）
+      WhatsNew.touch(section: Self.languageLabel, of: .general)
+      InterfaceLanguage.store(language)
+      languageNeedsRelaunch = InterfaceLanguage.needsRelaunch
+    }
+  }
+
   private var form: some View {
     Form {
       Section {
         SettingsPushRow(
           title: "功能",
-          detail: FeaturesPage.summary(
-            on: enabled, available: Feature.listed),
+          detail: "\(FeaturesPage.summary(on: enabled, available: Feature.listed))",
           // 新功能标记：0.8.0 加的（WhatsNew），拨过其中一个开关、换页之后才没
           isNew: navigation.map { WhatsNew.marks(section: "功能", of: .general, in: $0.fresh) }
             ?? false
         ) {
           navigation?.path = [FeaturesPage.route]
         }
+        // 插件页改版 D1：插件挪进侧栏的「全部插件」，这里一行带过去
+        SettingsPushRow(
+          title: "插件",
+          detail: enabled.contains(where: \.isPlugin)
+            ? "添加了 \(enabled.filter(\.isPlugin).count) 个" : "还没添加；便签、提醒、刘海岛这些都在里面",
+          isNew: navigation.map { WhatsNew.marks(section: "插件", of: .general, in: $0.fresh) }
+            ?? false
+        ) {
+          navigation?.page = .plugins
+        }
       }
       Section {
+        languageRow
         LabeledContent("外观") { AppearancePicker(selection: $appearance) }
           .onChange(of: appearance) { AppAppearance.apply() }
         LabeledContent {
@@ -196,7 +246,7 @@ struct GeneralTab: View {
         try LaunchAtLogin.set(isOn)
         loginError = nil
       } catch {
-        loginError = "设置失败：\(error.localizedDescription)"
+        loginError = String(localized: "设置失败：\(error.localizedDescription)")
       }
       loginStatus = SMAppService.mainApp.status
     }
@@ -229,22 +279,22 @@ struct GeneralTab: View {
 /// 一行权限：家族色块 + 名字 + 用途，右边是状态（未授权时带「去授权」）。从未授权变已授权时符号替换 + 弹一下
 /// （Whisker §6 设置）；通用页和欢迎引导共用
 struct PermissionRow: View {
-  let title: String
-  let detail: String
+  let title: LocalizedStringResource
+  let detail: LocalizedStringResource
   let symbol: String
   let color: Color
   let granted: Bool
   /// 未授权时的按钮文字
-  var button = "去授权"
+  var button: LocalizedStringResource = "去授权"
   let grant: () -> Void
 
   var body: some View {
     HStack(spacing: 10) {
       KindTile(symbol: symbol, color: color, size: 24)
       VStack(alignment: .leading, spacing: 1) {
-        Text(title)
+        Text(plain: title)
         // 11 pt：和系统画的行副标题同一个字号
-        Text(detail).font(.subheadline).foregroundStyle(.secondary)
+        Text(plain: detail).font(.subheadline).foregroundStyle(.secondary)
       }
       Spacer(minLength: 8)
       PermissionStatus(granted: granted, button: button, grant: grant)
@@ -259,7 +309,7 @@ extension PermissionRow {
   static func accessibility(granted: Bool) -> PermissionRow {
     PermissionRow(
       title: "辅助功能",
-      detail: "粘贴回原 App、划词翻译、截图识别窗口里的元素、长截图自动滚动、录屏显示按键、状态屏拦住键鼠、程序坞预览",
+      detail: "粘贴回原 App、划词翻译、截图识别窗口里的元素、长截图自动滚动、录屏显示按键、状态屏拦住键鼠、程序坞预览、平滑滚动",
       symbol: "hand.raised.fill", color: Style.Family.command, granted: granted
     ) { Permissions.grant(.accessibility) }
   }
@@ -276,7 +326,7 @@ extension PermissionRow {
 /// PermissionRow 和欢迎引导的功能行共用；button 是按钮文字（引导里写明授权哪一项）
 struct PermissionStatus: View {
   let granted: Bool
-  var button = "去授权"
+  var button: LocalizedStringResource = "去授权"
   let grant: () -> Void
 
   var body: some View {
@@ -457,9 +507,10 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
   var title: String {
     switch self {
-    case .system: "跟随系统"
-    case .light: "浅色"
-    case .dark: "深色"
+    // 显式 key：强调色、语言也有「跟随系统」，英文各叫各的（外观是系统设置里的 Auto）
+    case .system: String(localized: "appearance.system", defaultValue: "跟随系统")
+    case .light: String(localized: "浅色")
+    case .dark: String(localized: "深色")
     }
   }
 

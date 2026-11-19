@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var audioRecorder: AudioRecorder?
   /// 退出时在等录屏 / 录音收尾（applicationShouldTerminate 返回了 .terminateLater）
   private var quitsAfterRecording = false
+  /// 退出时在等装后台下好的新版本（replyQuit）：装完、到点两条路只回一次话
+  private var quitReplyPending = false
   /// 上次按功能开关（Feature）起停过的样子和那时复制即译开没开（剪贴板的轮询看它）：applyFeatures 只对变了的做事；
   /// nil = 还没起过（启动时）
   private var appliedFeatures: Set<Feature>?
@@ -115,12 +117,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let island = Island()
   /// 刘海岛上的系统一瞬提示（电源、电量、耳机、网络；设置 › 刘海岛「系统提示」，开着的才监听）
   private lazy var systemNotices = SystemNotices(island: island)
+  /// 整点报时（设置 › 刘海岛「日程」，默认关；Shell/Chime.swift）
+  private let hourlyChime = HourlyChime()
   /// 刘海岛的正在播放（刘海岛扩展第 2 期）：开着才连包里的正在播放服务
   private lazy var nowPlaying = NowPlaying(island: island)
   /// 刘海岛上的「下一个日程」（设置 › 刘海岛，默认关）
   private lazy var nextEvent = NextEvent(island: island)
   /// 音量 / 亮度键换成刘海岛上的提示（设置 › 刘海岛，默认关）
   private(set) lazy var mediaKeys = MediaKeys(island: island)
+  /// 平滑滚动（插件，SmoothScroll/）：起停跟着插件添没添加和辅助功能授权（apply），滚动那条线程由它管
+  private(set) lazy var smoothScroll = SmoothScroll()
   /// 应用内更新（读本仓库的 GitHub release）
   private let updater = Updater()
   /// CleanShot 式常驻缩略图（截图飞入右下角后留在那里）
@@ -152,9 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       noteEdge?.suspend(.all)
     }
     screen.blocker = { [unowned self] in
-      let busy = "先停止这一段再进入状态屏"
-      if recorder != nil { return ("正在录屏", busy) }
-      if audioRecorder?.isStarted == true { return ("正在录音", busy) }
+      let busy = String(localized: "先停止这一段再进入状态屏")
+      if recorder != nil { return (String(localized: "正在录屏"), busy) }
+      if audioRecorder?.isStarted == true { return (String(localized: "正在录音"), busy) }
       return nil
     }
     screen.isBusy = { [unowned self] in isCapturing || isReadingSelection }
@@ -163,6 +169,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       if Feature.reminders.isOn { reminders.recheck() }
     }
     return screen
+  }()
+  /// 保持唤醒（第一个插件，PLAN §10「保持唤醒」）：起停跟着插件添没添加（applyFeatures），开始 / 结束在岛上说一声
+  private(set) lazy var keepAwake: KeepAwake = {
+    let keepAwake = KeepAwake()
+    keepAwake.announce = { [unowned self] title, detail in
+      island.show(
+        "\(title)", detail: detail.map { "\($0)" }, tone: .info,
+        symbol: SettingsPage.keepAwake.symbol)
+    }
+    keepAwake.island = island
+    return keepAwake
   }()
   /// 提醒（PLAN §10「提醒」）：到点挂在刘海岛上。起停跟着功能开关（applyFeatures），列表变了看着偏好跟上
   private lazy var reminders: ReminderCenter = {
@@ -216,6 +233,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }()
   /// 程序坞预览（第九族，2026-10-22，PLAN §10「程序坞预览」）：鼠标停在程序坞的 App 图标上弹出它所有窗口的缩略图。
   /// 功能开关开着才起（默认关）；启动台开着、状态屏、截图框选时不弹。设置 › 程序坞预览。
+  /// 睡眠关蓝牙（插件，2026-11-17）：只有添加了才建
+  /// App 快捷键（插件，2026-11-17，PLAN §10「App 快捷键」）：单独按住 ⌘ 弹出前台 App 菜单里的快捷键。添加了才起；
+  /// 截图框选、状态屏、启动台开着时不弹（同程序坞预览）。面板用时建、收起后放掉（AppShortcuts 里的 TransientPanel）
+  private lazy var appShortcuts: AppShortcuts = {
+    let shortcuts = AppShortcuts()
+    shortcuts.isSuppressed = { [unowned self] in
+      isCapturing || statusScreen.isActive || OverlayPanel.isSelectingRegion(in: NSApp.windows)
+        || (Feature.launchpad.isOn && launchpad.isOpen) || hotKeys.recording != nil
+    }
+    shortcuts.onHide = { [unowned self] in idleReclaim.schedule() }
+    shortcuts.announce = { [unowned self] text in
+      island.show(text, tone: .warning, symbol: SettingsPage.appShortcuts.symbol)
+    }
+    return shortcuts
+  }()
+  private lazy var bluetoothSnooze: BluetoothSnooze = {
+    let snooze = BluetoothSnooze()
+    snooze.announce = { [unowned self] text in
+      island.show(text, tone: .warning, symbol: SettingsPage.bluetoothSnooze.symbol)
+    }
+    return snooze
+  }()
+
   private lazy var dockPreview: DockPreview = {
     let preview = DockPreview()
     preview.isSuppressed = { [unowned self] in
@@ -261,6 +301,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     panel.ignoresClick = { [unowned self] in statusItem?.ownsClick(at: $0) == true }
     model.hidePanel = { [unowned panel] in panel.hide() }
     model.openFeatures = { [unowned self] in showSettings(page: .general) }
+    // 打字转到启动器（X12）：启动器这个功能关着就响一声。按键原样交给启动器输入框的字段编辑器（经输入法：开着拼音时
+    // 这一下进组字，第一个字母不拆出去，同 issue #30）；框里原有的字先全选、被这一下替换。输入框没拿到焦点时
+    // （toggleLauncher 之后照理已经是它，同那里的 selectAll）退回直接填这个字
+    model.typeToLauncher = { [unowned self, unowned panel] event in
+      guard Feature.launcher.isOn else { return NSSound.beep() }
+      panel.hide()
+      if !(launcherPanel.isVisible && launcherPanel.isKeyWindow) { toggleLauncher() }
+      if let editor = launcherPanel.firstResponder as? NSTextView {
+        editor.selectAll(nil)
+        editor.keyDown(with: event)
+      } else {
+        launcherModel.query = event.characters ?? ""
+      }
+    }
     model.perform = { [unowned self] target in
       switch target {
       case .action(let action): run(action)
@@ -286,16 +340,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .copy:
           guard let copied = await copyImage(image, scale: scale) else { return }
-          island.show("已复制钉图", detail: copied.detail, leading: Island.thumbnail(of: image))
+          island.show(
+            "已复制钉图", detail: copied.detail.map { "\($0)" as LocalizedStringResource },
+            leading: Island.thumbnail(of: image))
         case .save:
           guard let saved = await saveImage(image, scale: scale, asking: false) else { return }
           island.show(
-            FlyCard.Badge.saved(saved.url).title, detail: saved.url.lastPathComponent,
+            "\(FlyCard.Badge.saved(saved.url).title)", detail: "\(saved.url.lastPathComponent)",
             leading: Island.thumbnail(of: image), actions: .file(saved.url))
         case .saveAs: await saveImageAs(image, scale: scale)
         case .recognize: await copyRecognizedText(in: image)
         case .translate: await translateInPanel(image)
         case .pin: break
+        }
+      }
+    }
+    // 钉图上选中的字（2026-11-17）：拷贝同识字（记进剪贴板历史）；翻译同钉图的翻译（开翻译浮窗）；搜索同启动器的 ⌃↩
+    board.textOutput = { [unowned self] action, text in
+      switch action {
+      case .copy:
+        Paster.write(string: text, record: true)
+        island.show("已复制", detail: "\(Island.excerpt(text))")
+      case .translate:
+        guard Feature.translate.isOn else { return }
+        coordinator.translate(text)
+        presentTranslate()
+      case .search:
+        let query = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard Feature.launcher.isOn, let engine = WebSearch.primary(),
+          let url = URL(string: WebSearch.url(engine, query))
+        else { return }
+        // 交给系统在后台打开（同启动器：同步的 open 要等浏览器启动完才返回），打不开时岛说一声
+        NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) {
+          [weak self] _, error in
+          guard let error else { return }
+          let message = error.localizedDescription
+          Task { @MainActor in
+            self?.island.show(
+              "打不开「\(url.absoluteString)」", detail: "\(message)", tone: .error)
+          }
         }
       }
     }
@@ -474,6 +557,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     model.openReminder = { [unowned self] in openReminder($0) }
     model.offerPlugin = { [unowned self] in showPlugin($0) }
+    model.keepAwakeStatus = { [unowned self] in
+      keepAwake.sessionEnd == nil ? nil : keepAwake.status()
+    }
+    model.keepAwakeBegin = { [unowned self] in keepAwake.begin(until: $0, label: $1) }
+    model.keepAwakeEnd = { [unowned self] in keepAwake.end() }
     model.openQuickLook = { [unowned self] in
       launcherQuickLook.open().zoom(
         from: launcherRowFrame ?? launcherPanel.frame, to: launcherQuickLookFrame)
@@ -762,6 +850,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           )
           .environment(island))
       case .island: AnyView(IslandTab())
+      case .plugins: AnyView(PluginsPage())
       case .clipboard: AnyView(ClipboardTab(store: clipboardStore).environment(island))
       case .launcher:
         AnyView(
@@ -804,6 +893,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       case .reminders: AnyView(RemindersTab())
       case .dockPreview: AnyView(DockPreviewTab())
       case .finderMenu: AnyView(FinderMenuTab())
+      case .keepAwake: AnyView(KeepAwakeTab(keepAwake: keepAwake))
+      case .bluetoothSnooze:
+        AnyView(BluetoothSnoozeTab { [unowned self] in bluetoothSnooze.requestAccess() })
+      case .smoothScroll: AnyView(SmoothScrollTab(smoothScroll: smoothScroll))
+      case .appShortcuts: AnyView(AppShortcutsTab())
       case .translate:
         AnyView(
           TranslateTab(services: serviceStore, history: historyStore, speaker: speaker)
@@ -836,16 +930,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// 到点的提醒要进入状态屏（提醒 C1 / C12）：先把进不去的情况挑出来（进不去时提醒退成全屏，原因写在全屏上——状态屏自己的
   /// 警告岛会被全屏盖住），再真的进。进去了返回 nil
   private func enterStatus(forReminder id: String) -> (reason: String, grants: Bool)? {
-    guard Feature.statusScreen.isOn else { return ("状态屏插件没添加", false) }
-    guard Permissions.isAccessibilityTrusted else { return ("还没给辅助功能授权，进不了状态屏", true) }
-    if let blocked = statusScreen.blocker() { return (blocked.title + "，没进状态屏", false) }
-    guard !statusScreen.isBusy(), !statusScreen.isActive else { return ("现在进不了状态屏", false) }
+    guard Feature.statusScreen.isOn else { return (String(localized: "状态屏插件没添加"), false) }
+    guard Permissions.isAccessibilityTrusted else {
+      return (String(localized: "还没给辅助功能授权，进不了状态屏"), true)
+    }
+    if let blocked = statusScreen.blocker() {
+      return (String(localized: "\(blocked.title)，没进状态屏"), false)
+    }
+    guard !statusScreen.isBusy(), !statusScreen.isActive else {
+      return (String(localized: "现在进不了状态屏"), false)
+    }
     let presets = StatusPreset.load()
     guard let preset = presets.first(where: { $0.id == id }) ?? presets.first else {
-      return ("没有可进入的状态", false)
+      return (String(localized: "没有可进入的状态"), false)
     }
     statusScreen.enter(preset)
-    return statusScreen.isActive ? nil : ("没进入状态屏", false)
+    return statusScreen.isActive ? nil : (String(localized: "没进入状态屏"), false)
   }
 
   /// 导入设置（设置 › 通用）整批写完偏好之后，让运行中的东西跟上：各页自己改的时候有各自的 onChange，这里没人通知。
@@ -871,6 +971,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if yieldToOlderInstance() { return }
     // 新装把功能开关明写进偏好（只开四个；升级上来的不碰），在注册默认值之前（功能管理拍板 M4 M5）
     Feature.seedNewInstall()
+    // 新装、系统英文在前：第一 / 第二语言明写成英语 / 简体中文（注册的默认值不动，多语言第 4 批）
+    Lang.seedNewInstall()
     Prefs.registerDefaults()
     Task { await EmojiPack.trim() }  // 动画表情的缓存收到上限以内（主线程外）
     Prefs.migrate()
@@ -883,6 +985,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     _ = stores
     isRunning = true
 
+    // 访达右键「拷贝图中文字」交给这里：识字要等模型、做完排空闲回收（recognizing）
+    FinderLink.copyImageText = { [unowned self] urls in copyRecognizedText(inFiles: urls) }
     // 本 App 生成的新文字写剪贴板时同时记进历史（Paster.write(string:record:)，mac-native §5）；暂停记录、剪贴板关着时不记
     Paster.recordText = { [unowned self] in
       if recordsClipboard { clipboardStore.recordOwnText($0) }
@@ -979,6 +1083,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     hotKeys.reload()
     try? FileManager.default.removeItem(at: ShotShelf.dragDirectory)
     shelf.copy = { [unowned self] png in await copyPNG(png) }
+    // 角落缩略图的「改标注」（X7）：历史里记好了这一条就同截图历史的「改标注」（原图 + 标注接着改、回写那一条），
+    // 没记成（历史关着）就对着这张图标、不回写
+    shelf.annotate = { [unowned self] image, scale, remembered in
+      Task {
+        if let id = await remembered?.value, let item = shotHistory.item(id),
+          let original = await shotHistory.image(for: id)
+        {
+          return openAnnotate(
+            original, scale: item.scale, history: { id }, annotations: item.annotations)
+        }
+        openAnnotate(image, scale: scale)
+      }
+    }
     shelf.island = island
     shelf.save = { [unowned self] in await savePNG($0, asking: false) }
     shelf.pin = { [unowned self] in pins.pin($0, frame: $1) }
@@ -1024,14 +1141,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return HotKeyAction.islandOrder(defaults.string(forKey: Prefs.islandActionOrder) ?? "")
         .filter { $0.isActive && !off.contains($0) }
         .map { action in
-          Island.Action(action.title(recording: recording == action), symbol: action.symbol) {
+          Island.Action("\(action.title(recording: recording == action))", symbol: action.symbol) {
             [unowned self] in run(action)
           }
         }
     }
     // 框选截图 / 录屏、启动台、状态屏盖着刘海时，点它、停在它上面都不算
     island.isSuppressed = { [unowned self] in
-      isCapturing || launchpad.isOpen || statusScreen.isActive
+      isCapturing || launchpad.isOpen || statusScreen.isActive || island.hiddenForFullScreen
     }
     island.hasExtras = Feature.island.isOn
     island.respondsToNotch = respondsToNotch
@@ -1040,9 +1157,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     applyIslandFeel()
     island.start()
     systemNotices.apply()
+    hourlyChime.apply()
+    // 系统专注模式（读系统日志，SystemFocus）：刘海上提示由它自己出；提醒那边跟着它算（ReminderFocus）。要在提醒起来
+    // （applyFeatures）之前接好：刚启动时按偏好里记着的那个模式算，别把专注期间压着的弹出来
+    SystemFocus.shared.island = island
+    Chime.isRecording = { [unowned self] in recorder != nil || audioRecorder?.isStarted == true }
+    SystemFocus.shared.onChange = { _, mode in ReminderFocus.shared.set(mode: mode) }
+    SystemFocus.shared.apply()
+    ReminderFocus.shared.set(mode: SystemFocus.shared.current)
     nowPlaying.apply()
     nextEvent.apply()
     mediaKeys.apply()
+    smoothScroll.apply()
     showWelcomeIfNeeded()
     // 有快捷键没注册上（15.0 / 15.1 上只带 ⌥ 的组合）：按了没反应又不知道为什么，启动时说一次
     // （放在「已更新」之后：同一座岛原地换内容，警告不能被盖掉）
@@ -1062,7 +1188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           let found = await ScreenRecorder.recover(
             into: ScreenshotOutput.saveDirectory, medium: medium)
         else { continue }
-        island.show(found.title, detail: found.detail, tone: found.tone)
+        island.show("\(found.title)", detail: "\(found.detail)", tone: found.tone)
       }
     }
     finishLaunchingNotes()
@@ -1078,9 +1204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.island.respondsToNotch = self.respondsToNotch
         self.applyIslandFeel()
         self.systemNotices.apply()
+        self.hourlyChime.apply()
+        SystemFocus.shared.apply()
+        ReminderFocus.shared.settingChanged()
         self.nowPlaying.apply()
         self.nextEvent.apply()
         self.mediaKeys.apply()
+        self.smoothScroll.apply()
         // 命令的快捷键跟着「命令和别名」的开关和别名、脚本命令总开关、⌘K「关掉这条命令」走（第 4 批评审：只在那一页的
         // onChange 里跟，别处改的不注销）；没变不动
         self.hotKeys.reloadCommandsIfChanged()
@@ -1103,6 +1233,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     island.hoverExpands = UserDefaults.standard.bool(forKey: Prefs.islandHoverExpands)
     island.haptics = UserDefaults.standard.bool(forKey: Prefs.islandHaptics)
     island.blurs = UserDefaults.standard.bool(forKey: Prefs.islandBlur)
+    // 这两样归刘海岛插件：移除插件后不再藏起基本的提示（评审）
+    island.hidesFromCapture =
+      Feature.island.isOn && UserDefaults.standard.bool(forKey: Prefs.islandHidesFromCapture)
+    island.hidesInFullScreen =
+      Feature.island.isOn && UserDefaults.standard.bool(forKey: Prefs.islandHidesInFullScreen)
+    let defaults = UserDefaults.standard
+    island.dwellScale =
+      (defaults.string(forKey: Prefs.islandNoticeLength).flatMap(Island.DwellLength.init)
+      ?? .standard).scale
+    island.hoverDelay = .milliseconds(
+      Int(min(max(defaults.double(forKey: Prefs.islandHoverDelay), 0.1), 3) * 1000))
+    island.levelStay = .milliseconds(
+      Int(min(max(defaults.double(forKey: Prefs.islandLevelStay), 0.5), 10) * 1000))
+    if island.levelAccent != defaults.bool(forKey: Prefs.islandLevelAccent) {
+      island.levelAccent.toggle()
+    }
+    if island.levelPercent != defaults.bool(forKey: Prefs.islandLevelPercent) {
+      island.levelPercent.toggle()
+    }
+    if island.outlined != defaults.bool(forKey: Prefs.islandOutlined) {
+      island.outlined.toggle()
+    }
   }
 
   /// 点刘海、停在刘海上、往下滑打开（有活动是它的卡片，没有是那一张）：刘海岛插件添加着，设置 › 刘海岛「点刘海打开」也开着
@@ -1132,8 +1284,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let turnedOff = (before ?? []).subtracting(now)
     let launching = before == nil
 
+    // 新插件的「新」：添加了就算碰过（插件页改版 E1；启动时开着的也记——同步来的、旧版本里加过的）
+    for plugin in turnedOn where plugin.isPlugin { WhatsNew.touch(plugin: plugin) }
     // 刘海岛插件（2026-11-13）：没添加时活动、常驻的刘海监听都停（Island.hasExtras），提示照常
     island.hasExtras = now.contains(.island)
+    // 刚添加时提醒的倒数、专注模式里压着的那一个重新挂上（2026-11-17 评审）
+    if turnedOn.contains(.island), !launching, now.contains(.reminders) { reminders.recheck() }
     // 剪贴板的轮询：记历史要它，复制即译也要它（剪贴板关着时只为复制即译跑、不入库）
     watcher.records = now.contains(.clipboard)
     if now.contains(.clipboard) || (now.contains(.translate) && copyToTranslate) {
@@ -1168,6 +1324,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if Feature.screenshot.isOn { clothesline.start() }
 
     if turnedOn.contains(.reminders) { reminders.start() }
+    if turnedOn.contains(.keepAwake) { keepAwake.start() }
+    // 刘海岛插件刚添加：没添加时岛不收活动，开着的那段保持唤醒补挂上去
+    if turnedOn.contains(.island), now.contains(.keepAwake) { keepAwake.syncIsland(force: true) }
 
     // 访达右键（拍板 D3）：运行中打开、系统里扩展还没打开时直接带去 系统设置 › 登录项与扩展；启动时、欢迎引导里勾上的不当场弹
     // （同程序坞预览要授权）。扩展自己读开关，这边没有后台活要起停
@@ -1175,6 +1334,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       !FIFinderSyncController.isExtensionEnabled
     {
       FinderMenuTab.openExtensionSettings()
+    }
+
+    // App 快捷键：运行中添加、还没有辅助功能授权时当场带去授权（同程序坞预览；没有它按住 ⌘ 听不到、菜单也读不了）
+    if turnedOn.contains(.appShortcuts) {
+      appShortcuts.start()
+      if !launching, !settingsNavigation.showsOnboarding, !Permissions.isAccessibilityTrusted {
+        Permissions.requestAccessibility()
+      }
+    }
+
+    // 睡眠关蓝牙：运行中添加、还没问过蓝牙授权时当场问（同程序坞预览：启动时、欢迎引导里勾上的不当场弹）
+    if turnedOn.contains(.bluetoothSnooze) {
+      bluetoothSnooze.start()
+      if !launching, !settingsNavigation.showsOnboarding, !BluetoothSnooze.isAuthorized {
+        bluetoothSnooze.requestAccess()
+      }
     }
 
     if turnedOn.contains(.dockPreview) {
@@ -1191,6 +1366,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       }
     }
 
+    // 插件移除：停掉、不再听（手动开着的那一段也停）
+    if turnedOff.contains(.keepAwake) { keepAwake.stop() }
+
+    // 平滑滚动：起停在 smoothScroll.apply（偏好监听里调）。运行中添加时缺授权就当场要（同程序坞预览；启动时、欢迎引导里不问）；
+    // 别的改滚轮的工具开着时说一声（两层平滑会叠在一起、两层反向会反回去）
+    if turnedOn.contains(.smoothScroll), !launching, !settingsNavigation.showsOnboarding {
+      if !Permissions.isAccessibilityTrusted { Permissions.requestAccessibility() }
+      if let other = SmoothScroll.runningOtherTools().first {
+        island.show(
+          "「\(other)」也在处理鼠标滚轮", detail: "两边一起开会平滑两次、反向两次：留一边就好", tone: .warning,
+          symbol: "computermouse")
+      }
+    }
+
     guard !launching else { return }
     // 正在录快捷键时热键停着，录完它自己会重新注册；只是复制即译开关变了不用重新注册
     if now != before, hotKeys.recording == nil { hotKeys.reload() }
@@ -1199,8 +1388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       builtClipboardPanel?.hide()
       quickLookPanel.panel?.hide()
       // 菜单栏的「暂停记录」跟着剪贴板藏起来了：恢复，免得复制即译也一直被它挡着
-      watcher.isUserPaused = false
-      clipboardModel.isRecordingPaused = false
+      setRecordingPaused(false)
     }
     if turnedOff.contains(.launcher) {
       builtLauncherPanel?.hide()
@@ -1242,6 +1430,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if turnedOff.contains(.launchpad) { launchpad.turnOff() }
     if turnedOff.contains(.statusScreen) { statusPicker.panel?.hide() }
     if turnedOff.contains(.dockPreview) { dockPreview.stop() }
+    if turnedOff.contains(.bluetoothSnooze) { bluetoothSnooze.stop() }
+    if turnedOff.contains(.appShortcuts) { appShortcuts.stop() }
     if turnedOff.contains(.reminders) { reminders.stop() }
     idleReclaim.schedule()  // 关掉的功能占着的缓存跟着还
   }
@@ -1322,7 +1512,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func purgeNotes() {
     guard let noteStore else { return }
     noteStore.purgeExpired()
-    noteStore.images?.purge(referenced: noteStore.referencedImages)
+    // 快速记一条的草稿里贴的图也算有人引用（X5）：开着的面板看内存里的，没建过面板看草稿文件
+    let draft =
+      noteCapture.map { Set($0.model.images.map(\.id)) }
+      ?? NoteCaptureModel.draftImages(
+        at: dataDirectory.appending(path: NoteCaptureModel.draftName))
+    noteStore.images?.purge(referenced: noteStore.referencedImages.union(draft))
   }
 
   /// 屏幕边缘的便签：右键菜单里的「全部便签」「设置…」、「在全部便签里打开」接到这里的入口；什么时候不许扇出也由这里说
@@ -1352,7 +1547,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // 快速记一条停手不到 1 秒的草稿（E2）
     noteCapture?.model.saveDraft()
     closeReadyAudio()  // 待录的录音控制条没有东西要收尾：直接收掉，不等它回调
-    guard recorder != nil || audioRecorder != nil else { return .terminateNow }
+    guard recorder != nil || audioRecorder != nil else {
+      guard updater.hasPrepared else { return .terminateNow }
+      replyQuit()
+      return .terminateLater
+    }
     quitsAfterRecording = true
     recorder?.stop()
     audioRecorder?.stop()
@@ -1360,9 +1559,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       try? await Task.sleep(for: .seconds(5))
       guard quitsAfterRecording else { return }
       quitsAfterRecording = false
-      NSApp.reply(toApplicationShouldTerminate: true)
+      replyQuit()
     }
     return .terminateLater
+  }
+
+  /// .terminateLater 之后回话「可以退了」：先装上后台下好的新版本（第四轮体检 X11；装不成照常退）。最多等 30 秒
+  /// （解包、验签各自的上限加起来要几分钟）：到点直接退，装到一半的不换上（换上那一下是原子的），下次打开再查再下
+  private func replyQuit() {
+    quitReplyPending = true
+    let finish = { [unowned self] in
+      guard quitReplyPending else { return }
+      quitReplyPending = false
+      NSApp.reply(toApplicationShouldTerminate: true)
+    }
+    Task {
+      await updater.installPrepared()
+      finish()
+    }
+    Task {
+      try? await Task.sleep(for: .seconds(30))
+      finish()
+    }
   }
 
   /// 退出前把便签攒着没落盘的改动落下去（应用内更新的重启也走这里：Updater.install 调的是 NSApp.terminate）。
@@ -1372,13 +1590,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return noteStore.flushBeforeQuit { problem in
       let alert = NSAlert()
       alert.alertStyle = .warning
-      alert.messageText = "便签没存上"
-      alert.informativeText =
-        "最近改的便签没能写进磁盘（\(problem)）。\n现在退出，这些改动就丢了；可以先把正在写的那条拷贝到别处，再试一次。"
-      alert.addButton(withTitle: "再试一次")
-      alert.addButton(withTitle: "仍要退出").hasDestructiveAction = true
+      alert.messageText = String(localized: "便签没存上")
+      alert.informativeText = String(
+        localized: "最近改的便签没能写进磁盘（\(problem)）。\n现在退出，这些改动就丢了；可以先把正在写的那条拷贝到别处，再试一次。")
+      alert.addButton(withTitle: String(localized: "再试一次"))
+      alert.addButton(withTitle: String(localized: "仍要退出")).hasDestructiveAction = true
       // Esc = 取消
-      alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+      alert.addButton(withTitle: String(localized: "取消")).keyEquivalent = "\u{1b}"
       NSApp.activate()
       switch alert.runModal() {
       case .alertFirstButtonReturn: return .retry
@@ -1392,6 +1610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     guard isRunning else { return }
     FileMoves.forgetCut()  // 访达右键剪切的清单只在内存里：退出后扩展别再列「粘贴」
     statusScreen.exit(.quit)  // 在状态屏里被要求退出（远程、脚本）：拦截当场撤掉
+    SystemFocus.shared.terminate()  // 读专注模式的 log stream 当场停掉，不留给 launchd（评审）
     // 便签：applicationShouldTerminate 已经落过、落不下去也问过了；这里再落一次兜着之后才有的改动（等录屏收尾的那几秒）
     noteStore?.flush()
     // 面板固定着删了再退出：删掉的也要落库（撤销栈平时在面板收起时提交，体检 A2），⌘C 复制过的挪到最前
@@ -1514,6 +1733,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fresh: Set(fresh.flatMap(\.actions))),
       offCount: Home.offCount(
         enabled: Feature.enabled, available: Set(Feature.listed)),
+      // 快捷键没反应时人多半先点图标：这时看一眼安全输入（issue #27）
+      secureInput: hotKeys.secureInputBlock(),
       settingsIsNew: WhatsNew.inSettingsOnly(fresh), appearing: appearing)
     if appearing {
       homePanel.setContentSize(homeModel.size)
@@ -1595,6 +1816,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func newNote() {
     guard usableNotes() != nil else { return }
     if noteEdge?.openNew() != true { showNotes(creating: true) }
+  }
+  /// 「屏幕边缘的便签」（X16）：那叠扇出来、键盘给它；已经展开着就收回。屏幕边缘关着、还没有便签时岛上说
+  private func summonNoteDeck() {
+    guard usableNotes() != nil, let noteEdge else { return }
+    switch noteEdge.summon() {
+    case .done: break
+    case .disabled:
+      island.show(
+        "屏幕边缘的便签关着", detail: "到 设置 › 便签 打开「屏幕边缘」", tone: .info,
+        actions: [.init("打开设置", opens: true) { [unowned self] in showSettings(page: .notes) }])
+    case .empty:
+      island.show(
+        "还没有便签", detail: "记下第一条，屏幕边缘就会出现", tone: .info,
+        actions: [.init("新建便签") { [unowned self] in newNote() }])
+    }
   }
 
   private func makeNotesWindow(_ store: NoteStore) -> NotesWindow {
@@ -1691,6 +1927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       pinsHidden: pins.panels.isEmpty ? nil : pins.isHidden, checksUpdates: updater.isSupported,
       recording: recorder != nil
         ? .screenRecord : audioRecorder?.isStarted == true ? .audioRecord : nil,
+      awake: Feature.keepAwake.isOn && keepAwake.sessionEnd != nil,
       statusPresets: StatusPreset.load(),
       statusEntersFirst: UserDefaults.standard.bool(forKey: Prefs.statusScreenHotKeyEntersFirst),
       features: Feature.enabled)
@@ -1725,6 +1962,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     case .noteCapture: toggleNoteCapture()
     case .noteNew: newNote()
     case .noteAll: showNotes()
+    case .noteDeck: summonNoteDeck()
     case .launchpad: launchpad.toggle()
     // 按键叫出的（全局快捷键；启动器、主界面里按 ↩——这一刻的事件是按键）：临时当 key，Esc / ←→ / ↩ 能用（U9）。
     // 用鼠标从菜单栏菜单、主界面点的，和点刘海叫出的一样不抢键盘
@@ -1732,15 +1970,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       island.toggleBoard(byKeyboard: byKey || NSApp.currentEvent?.type == .keyDown)
     case .home: toggleHome()
     case .reminderNew: newReminder()
+    case .keepAwake: keepAwake.toggle()
+    case .appShortcuts: appShortcuts.toggle()
     }
   }
 
-  /// 「新建提醒」（提醒 D5）：打开启动器、填好「提醒 」，接着写时间和内容（解析和预览都在启动器里，不另做面板）；
+  /// 「新建提醒」（提醒 D5）：打开启动器、填好「提醒 」（英文界面「remind 」），接着写时间和内容（解析和预览都在启动器里，不另做面板）；
   /// 启动器这个功能关着时打开 设置 › 提醒
   private func newReminder() {
     guard Feature.launcher.isOn else { return showSettings(page: .reminders) }
     if !(launcherPanel.isVisible && launcherPanel.isKeyWindow) { toggleLauncher() }
-    launcherModel.query = "提醒 "
+    // 英文界面填英文关键词（ReminderPhrase.keywords 里两个都认；第 1 批留下的，第 8 批让英文的一句话也认得出）
+    launcherModel.query = InterfaceLanguage.running == .english ? "remind " : "提醒 "
     (launcherPanel.firstResponder as? NSTextView)?.moveToEndOfDocument(nil)
   }
 
@@ -1754,9 +1995,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     Reminder.save(Reminder.adding(reminder, to: list))
     island.show(
-      "提醒建好了", detail: reminder.summary() + " · " + reminder.title, tone: .success,
+      "提醒建好了", detail: "\(reminder.summary()) · \(reminder.displayTitle)", tone: .success,
       symbol: "checkmark.circle.fill",
       actions: [Island.Action("编辑", opens: true) { [unowned self] in openReminder(reminder.id) }])
+  }
+
+  /// 菜单栏「保持唤醒」一项带子菜单（第一个插件，拍板 B2）：开着时项名后面写还剩多久，子菜单第一项「停止保持唤醒」；
+  /// 没开时「开始（无限期）」（带全局快捷键）和几档时长；定时的时段里另有一行灰字写到几点；最后「保持唤醒设置…」
+  private func addKeepAwakeMenu(to menu: NSMenu, isNew: Bool) {
+    let family = HotKeyAction.keepAwake
+    let color = NSColor(family.color)
+    let title: LocalizedStringResource =
+      keepAwake.isActive ? "\(family.title) · \(keepAwake.status())" : family.titleResource
+    let item = menu.addAction(title, symbol: family.symbol, color: color) {}
+    if isNew { item.badge = WhatsNew.menuBadge }
+    let submenu = NSMenu()
+    // 定时那一行要灰着（只是告诉你到几点）：自动启用会把它点亮
+    submenu.autoenablesItems = false
+    let hotKey = hotKeys.bindings[family]
+    if keepAwake.sessionEnd != nil {
+      submenu.addAction(
+        "停止保持唤醒", symbol: "stop.circle", color: color, key: hotKey?.menuKeyEquivalent ?? "",
+        modifiers: hotKey?.modifierFlags ?? []
+      ) { [unowned self] in keepAwake.end() }
+    } else {
+      if keepAwake.inSchedule {
+        let line = submenu.addAction("\(keepAwake.status())", symbol: "clock", color: color) {}
+        line.isEnabled = false
+        submenu.addItem(.separator())
+      }
+      for preset in KeepAwakePlan.presets {
+        let key = preset.minutes == nil ? hotKey : nil
+        let title: LocalizedStringResource =
+          preset.minutes == nil ? "开始（无限期）" : "\(preset.title)"
+        submenu.addAction(
+          title, symbol: "timer", color: color,
+          key: key?.menuKeyEquivalent ?? "", modifiers: key?.modifierFlags ?? []
+        ) { [unowned self] in
+          keepAwake.begin(
+            until: preset.minutes.map { Date.now.addingTimeInterval(Double($0 * 60)) },
+            label: preset.title)
+        }
+      }
+    }
+    submenu.addItem(.separator())
+    submenu.addAction(
+      "保持唤醒设置…", symbol: MenuExtra.settings.symbol, color: NSColor(MenuExtra.settings.color)
+    ) { [unowned self] in showSettings(page: .keepAwake) }
+    item.submenu = submenu
   }
 
   /// 菜单栏「提醒」一项带子菜单（提醒 D6）：新建提醒…（带全局快捷键）、下一个是什么、几分钟后提醒我、
@@ -1765,11 +2051,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func addReminderMenu(to menu: NSMenu, isNew: Bool) {
     let family = HotKeyAction.reminderNew
     let color = NSColor(family.color)
-    let item = menu.addAction(SettingsPage.reminders.title, symbol: family.symbol, color: color) {}
+    let item = menu.addAction(
+      SettingsPage.reminders.titleResource, symbol: family.symbol, color: color
+    ) {}
     let submenu = NSMenu()
     let hotKey = hotKeys.bindings[family]
     let create = submenu.addAction(
-      family.title + "…", symbol: "plus", color: color, key: hotKey?.menuKeyEquivalent ?? "",
+      "\(family.title)…", symbol: "plus", color: color, key: hotKey?.menuKeyEquivalent ?? "",
       modifiers: hotKey?.modifierFlags ?? []
     ) { [unowned self] in run(family) }
     if isNew {
@@ -1779,14 +2067,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if let next = reminders.nextUp() {
       let when = Reminder.Schedule(kind: .once, date: next.at).summary(
         now: .now, calendar: .current)
-      submenu.addAction("下一个：\(next.reminder.title)（\(when)）", symbol: "clock", color: color) {
+      submenu.addAction("下一个：\(next.reminder.displayTitle)（\(when)）", symbol: "clock", color: color)
+      {
         [unowned self] in openReminder(next.reminder.id)
       }
     }
     submenu.addItem(.separator())
     for minutes in [5, 10, 25, 60] {
       submenu.addAction(
-        minutes == 60 ? "1 小时后提醒我" : "\(minutes) 分钟后提醒我", symbol: "timer", color: color
+        minutes == 60 ? "1 小时后提醒我" : "\(minutes) 分钟后提醒我",
+        symbol: "timer", color: color
       ) { [unowned self] in
         // 子菜单里的快捷提醒也算用过提醒（新功能标记）
         WhatsNew.touch(action: family)
@@ -1809,7 +2099,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let tomorrow = Calendar.current.date(
         byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: .now))
       for (title, until) in [
-        ("暂停全部提醒 1 小时", Date.now.addingTimeInterval(3600)), ("暂停到明天", tomorrow),
+        ("暂停全部提醒 1 小时" as LocalizedStringResource, Date.now.addingTimeInterval(3600)),
+        ("暂停到明天", tomorrow),
       ] {
         guard let until else { continue }
         submenu.addAction(title, symbol: "pause.circle", color: color) { [unowned self] in
@@ -1864,12 +2155,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     .init("勾选同步", opens: true) { [unowned self] in showSettings(page: .general) }
   }
 
+  /// 暂停记录剪贴板的三处一起设：采集、面板底栏、菜单栏图标的暂停角标（X13）
+  private func setRecordingPaused(_ paused: Bool) {
+    watcher.isUserPaused = paused
+    clipboardModel.isRecordingPaused = paused
+    statusItem?.clipboardPaused = paused
+  }
+
   /// 暂停 / 恢复记录剪贴板（菜单栏、启动器，D4；主界面 2026-11-13 起不放开关）：不存盘，重启 App 自动恢复记录（免得忘了关）；
   /// 菜单一关就看不出开没开，用刘海说（剪贴板面板底栏也写着「已暂停记录」）
   private func togglePauseRecording() {
     let paused = watcher.isUserPaused
-    watcher.isUserPaused = !paused
-    clipboardModel.isRecordingPaused = !paused
+    setRecordingPaused(!paused)
     island.show(
       paused ? "已恢复记录剪贴板" : "已暂停记录剪贴板",
       detail: paused ? nil : "复制的内容不进历史，再点一次恢复", tone: .info,
@@ -1882,7 +2179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let wasOn = UserDefaults.standard.bool(forKey: Prefs.translateCopyToTranslate)
     UserDefaults.standard.set(!wasOn, forKey: Prefs.translateCopyToTranslate)
     island.show(
-      wasOn ? "已关闭复制即译" : "已开启复制即译", detail: wasOn ? nil : "复制文字后会弹出翻译", tone: .info,
+      wasOn ? "已关闭复制即译" : "已开启复制即译",
+      detail: wasOn ? nil : "复制文字后会弹出翻译", tone: .info,
       symbol: wasOn ? "character.bubble" : "character.bubble.fill",
       actions: [.init("撤销") { [unowned self] in toggleCopyToTranslate() }])
   }
@@ -1924,7 +2222,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     Task {
       guard let image = await PinBoard.decode(source) else {
-        let name = if case .file(let url) = source { "「\(url.lastPathComponent)」" } else { "这张图片" }
+        let name =
+          if case .file(let url) = source {
+            String(localized: "「\(url.lastPathComponent)」")
+          } else {
+            String(localized: "这张图片")
+          }
         return island.show("没能钉到屏幕", detail: "读不出\(name)", tone: .error)
       }
       // 解码完才找空位：连按几下时，前一张这时已经钉上了
@@ -1946,7 +2249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       island.show("已允许访问", detail: "文件搜索现在能搜到桌面、文稿、下载里的文件")
     } else {
       island.show(
-        "没有权限搜" + denied.map { "「\($0)」" }.joined(),
+        "没有权限搜\(String(localized: "「\(denied.joined(separator: Self.quotedSeparator))」"))",
         detail: "可在系统设置 › \(Permissions.privacyPane) › 文件和文件夹里打开",
         tone: .warning, actions: [.settings(for: .filesAndFolders)])
     }
@@ -2047,7 +2350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       } else if let text = await SelectionReader.read(pausing: watcher) {
         coordinator.translate(text, selectedIn: sourceApp)
       } else if !Permissions.isAccessibilityTrusted {
-        coordinator.showNotice("划词翻译需要「辅助功能」授权", permission: .accessibility)
+        coordinator.showNotice(String(localized: "划词翻译需要「辅助功能」授权"), permission: .accessibility)
         Permissions.requestAccessibility()
       } else {
         // 没有选中文字：当输入翻译用，占位说清楚是没取到（体检 A16），VoiceOver 同一句
@@ -2072,7 +2375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return island.show(
           "已复制译文", detail: "便签里的原文已经改了，没有替换", tone: .info, symbol: "doc.on.doc")
       }
-      return island.show("已替换为译文", detail: Island.excerpt(text))
+      return island.show("已替换为译文", detail: "\(Island.excerpt(text))")
     }
     guard let pid = source.pid else {
       Paster.write(string: text, record: true)
@@ -2169,7 +2472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               "已复制译文", detail: "便签里的原文已经改了，没有替换", tone: .info,
               symbol: "doc.on.doc")
           }
-          return island.show("已替换为译文", detail: Island.excerpt(result))
+          return island.show("已替换为译文", detail: "\(Island.excerpt(result))")
         }
         Paster.write(string: result, record: true)
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == sourceApp,
@@ -2179,33 +2482,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "已复制译文", detail: "前台已不是取词的 App，没有替换", tone: .info, symbol: "doc.on.doc")
         }
         _ = Paster.pasteToFrontmost()
-        island.show("已替换为译文", detail: Island.excerpt(result))
+        island.show("已替换为译文", detail: "\(Island.excerpt(result))")
       } catch {
         guard !Task.isCancelled else { return }
         // 重试 = 再划一次：前台还是取词的 App（点岛不激活本 App），选区多半还在
         island.show(
-          "翻译失败", detail: error.localizedDescription, tone: .error,
+          "翻译失败", detail: "\(error.localizedDescription)", tone: .error,
           actions: [.init("重试") { [self] in translateAndReplace() }])
       }
     }
   }
 
   /// 截图翻译（⌥S）。默认：冻结各屏 → 框选 → 本机识别文字 → 原文记进剪贴板历史 → 翻译浮窗走现有的多服务翻译。
-  /// 设置 › 翻译 开着「把译文直接盖回截图上」（PR #5）时：和截图同一个编辑页，框完松手自动翻译——译文贴在选区里，
-  /// 人可以接着标注、复制、保存
+  /// 设置 › 翻译 开着「把译文直接盖回截图上」（PR #5）时：和截图同一个编辑页，框完松手（或单击选中悬停的窗口 / 元素）
+  /// 自动翻译——译文贴在选区里，人可以接着标注、复制、保存
   func screenshotTranslate() {
     guard UserDefaults.standard.bool(forKey: Prefs.translateScreenshotOverlay) else {
       return beginCapture(hidingPanels: true) { [self] in
         guard
           let region = await frozenSelection(
-            "截图翻译", { await RegionSelector.select($0, hint: "拖动框选要翻译的文字 · Esc 取消") })
+            "截图翻译",
+            { await RegionSelector.select($0, hint: String(localized: "拖动框选要翻译的文字 · Esc 取消")) })
         else { return }
         await translateInPanel(region)
       }
     }
-    captureShots(
-      feature: "截图翻译", hidingPanels: true,
-      hint: "拖动框选要翻译的文字 · Esc 取消", autoTranslate: true)
+    captureShots(feature: "截图翻译", hidingPanels: true, autoTranslate: true)
   }
 
   /// 识字：框选后静默复制识别出的文字（有二维码 / 条码时复制它的内容），轻提示结果，不弹窗
@@ -2213,7 +2515,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     beginCapture(hidingPanels: true) { [self] in
       guard
         let region = await frozenSelection(
-          "识字", { await RegionSelector.select($0, hint: "拖动框选要识别的文字或二维码 · Esc 取消") })
+          "识字",
+          {
+            await RegionSelector.select(
+              $0, hint: String(localized: "拖动框选要识别的文字或二维码 · Esc 取消"))
+          })
       else { return }
       await copyRecognizedText(in: region)
     }
@@ -2227,10 +2533,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   /// 截图家族共用的后半段（截图、截图翻译）：冻结各屏 → 框选 → 按交回的动作出图。
-  /// hint 非空时换掉遮罩顶上的提示；autoTranslate = 框完松手就自动翻译（⌥S）
+  /// autoTranslate = 框完松手、单击选中就自动翻译（⌥S）
   private func captureShots(
-    feature: String, hidingPanels: Bool, repeatingLastRegion: Bool = false,
-    hint: String? = nil, autoTranslate: Bool = false
+    feature: LocalizedStringResource, hidingPanels: Bool, repeatingLastRegion: Bool = false,
+    autoTranslate: Bool = false
   ) {
     // 工具栏「翻译」就地盖回截图上，还是交出去走翻译浮窗：看设置 › 翻译「把译文直接盖回截图上」
     let overlays = UserDefaults.standard.bool(forKey: Prefs.translateScreenshotOverlay)
@@ -2238,7 +2544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if overlays {
       translate = {
         [weak self] (image: CGImage, pixelsPerPoint: CGFloat) async -> ScreenshotOverlay.Outcome in
-        guard let self else { return .init(message: "翻译不可用") }
+        guard let self else { return .init(message: String(localized: "翻译不可用")) }
         return await self.overlayTranslate(image, pixelsPerPoint: pixelsPerPoint)
       }
     } else {
@@ -2247,13 +2553,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     beginCapture(hidingPanels: hidingPanels) { [self] in
       let lastRegion = UserDefaults.standard.string(forKey: Prefs.screenshotLastRegion).map(
         NSRectFromString)
+      // 带上鼠标指针（X8）只给截图：截图翻译盖回的那一路要识字，指针会挡字
+      let cursor = !autoTranslate && UserDefaults.standard.bool(forKey: Prefs.screenshotCursor)
       guard
         let outcome = await frozenSelection(
-          feature,
+          feature, cursor: cursor,
           {
             await RegionSelector.capture(
               $0, lastRegion: lastRegion, preselect: repeatingLastRegion,
-              hint: hint, autoTranslate: autoTranslate,
+              autoTranslate: autoTranslate,
               recordingBlocker: { [weak self] in self?.recordingBlocker(.screen) },
               translate: translate)
           })
@@ -2340,13 +2648,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// 先录后更新）。录音待录（控制条开着、没开始）不算在录：不拦录屏，真要录屏时 beginRecording 把控制条收掉
   private func recordingBlocker(_ medium: ScreenRecorder.Medium) -> (title: String, detail: String)?
   {
-    let busy = "先停止这一段再录"
-    if recorder != nil { return (medium == .screen ? "已经在录屏" : "正在录屏", busy) }
+    let busy = String(localized: "先停止这一段再录")
+    if recorder != nil {
+      return (
+        medium == .screen ? String(localized: "已经在录屏") : String(localized: "正在录屏"), busy
+      )
+    }
     if audioRecorder?.isStarted == true {
-      return (medium == .audio ? "已经在录音" : "正在录音", busy)
+      return (
+        medium == .audio ? String(localized: "已经在录音") : String(localized: "正在录音"), busy
+      )
     }
     if case .installing = updater.state {
-      return ("正在更新", "装好会自动重新打开，之后再\(medium.noun)")
+      return (
+        String(localized: "正在更新"),
+        medium == .screen
+          ? String(localized: "装好会自动重新打开，之后再录屏")
+          : String(localized: "装好会自动重新打开，之后再录音")
+      )
     }
     return nil
   }
@@ -2354,7 +2673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// 开不了就出警告岛，返回 true
   private func refusesRecording(_ medium: ScreenRecorder.Medium) -> Bool {
     guard let blocker = recordingBlocker(medium) else { return false }
-    island.show(blocker.title, detail: blocker.detail, tone: .warning)
+    island.show("\(blocker.title)", detail: "\(blocker.detail)", tone: .warning)
     return true
   }
 
@@ -2388,7 +2707,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     guard !refusesRecording(.audio),
       source == .microphone || screenRecordingAllowed(for: "录系统声音")
     else { return false }
-    updater.blocker = "录制结束后再更新"
+    updater.blocker = String(localized: "录制结束后再更新")
     return true
   }
 
@@ -2418,7 +2737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return island.show("没能开始录屏", detail: "找不到选区所在的屏幕", tone: .warning)
     }
     self.recorder = recorder
-    updater.blocker = "录制结束后再更新"
+    updater.blocker = String(localized: "录制结束后再更新")
     ReminderSound.stop()  // 正在放的长提示音别录进去（提醒 C11）
     recorder.start()
   }
@@ -2434,7 +2753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     defer {
       if quitsAfterRecording {
         quitsAfterRecording = false
-        NSApp.reply(toApplicationShouldTerminate: true)
+        replyQuit()
       }
     }
     // 开录报屏幕录制授权问题（录屏、录系统声音）
@@ -2460,9 +2779,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     if result.moved, let file = result.file {
       // 飞过去了：落地的角标已写目录名，正常停的不再出岛（同截图快速保存），只给 VoiceOver 说一句
       if landRecording(file, result, medium), summary.tone == .success {
+        let spoken = ScreenRecorder.spoken(Int(result.duration.components.seconds))
         return Island.announce(
-          "\(medium.noun)已保存到「\(folder)」，"
-            + ScreenRecorder.spoken(Int(result.duration.components.seconds)))
+          medium == .screen ? "录屏已保存到「\(folder)」，\(spoken)" : "录音已保存到「\(folder)」，\(spoken)")
       }
       if summary.tone == .success, let poster = result.poster {
         leading = Island.thumbnail(of: poster)
@@ -2473,7 +2792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let actions =
       result.moveDenied ? saveFolderActions : result.file.map([Island.Action].file) ?? []
     island.show(
-      summary.title, detail: summary.detail, tone: summary.tone,
+      "\(summary.title)", detail: "\(summary.detail)", tone: summary.tone,
       symbol: summary.tone == .success ? symbol : nil, leading: leading, actions: actions)
   }
 
@@ -2531,7 +2850,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func copyColor(_ hex: String) {
     Paster.write(string: hex, record: true)
     island.show(
-      "已复制色值", detail: hex, leading: Self.color(hex).map(Island.Leading.color) ?? .tone)
+      "已复制色值", detail: "\(hex)", leading: Self.color(hex).map(Island.Leading.color) ?? .tone)
   }
 
   /// 长截图（截图框选后按 S）：遮罩已收起，在实时画面上边滚边拼，结束后按选的方式输出。整个过程都算在这次截图里
@@ -2585,7 +2904,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     } catch {
       pins.resume()
       if Feature.notes.isOn { noteEdge?.floats.resume() }  // 便签关着时它们是藏着的，别放出来
-      island.show("长截图失败", detail: error.localizedDescription, tone: .error)
+      island.show("长截图失败", detail: "\(error.localizedDescription)", tone: .error)
     }
   }
 
@@ -2674,7 +2993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           if recordsClipboard { clipboardStore.recordFiles([url]) }
           let poster = await shotHistory.thumbnail(for: item.id)
           island.show(
-            "已复制\(item.kind.title)", detail: url.lastPathComponent,
+            "已复制\(item.kind.title)", detail: "\(url.lastPathComponent)",
             leading: poster.map { Island.thumbnail(of: $0) } ?? .tone)
           return
         }
@@ -2682,7 +3001,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 拷成文件时借存过的文件名（同拖出去的那份）
         let name = shotHistory.dragName(for: item)
         guard let copied = await copyImage(image, scale: item.scale, name: name) else { return }
-        island.show("已复制截图", detail: copied.detail, leading: Island.thumbnail(of: image))
+        island.show(
+          "已复制截图", detail: copied.detail.map { "\($0)" as LocalizedStringResource },
+          leading: Island.thumbnail(of: image))
       }
     }
     actions.save = { [unowned self] item in
@@ -2691,7 +3012,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let saved = await saveImage(image, scale: item.scale, asking: false) else { return }
         shotHistory.markSaved(item.id, to: saved.url)
         island.show(
-          FlyCard.Badge.saved(saved.url).title, detail: saved.url.lastPathComponent,
+          "\(FlyCard.Badge.saved(saved.url).title)", detail: "\(saved.url.lastPathComponent)",
           leading: Island.thumbnail(of: image), actions: .file(saved.url))
       }
     }
@@ -2706,7 +3027,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !urls.isEmpty else { return missingShot() }
         Paster.write(files: urls)
         if recordsClipboard { clipboardStore.recordFiles(urls) }
-        island.show("已复制 \(urls.count) 项", detail: urls.first?.lastPathComponent)
+        island.show(
+          "已复制 \(urls.count) 项", detail: urls.first.map { "\($0.lastPathComponent)" })
       }
     }
     // 多选存储：一条条存到快速保存目录，最后只说一句（一张张弹提示会刷屏）
@@ -2721,10 +3043,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
           saved.append(out.url)
         }
         guard let first = saved.first else { return missingShot() }
-        island.show(
-          "已存 \(saved.count) 张",
-          detail: FileManager.default.displayName(
-            atPath: first.deletingLastPathComponent().path), actions: .file(first))
+        let folder = FileManager.default.displayName(atPath: first.deletingLastPathComponent().path)
+        island.show("已存 \(saved.count) 张", detail: "\(folder)", actions: .file(first))
       }
     }
     actions.saveAs = { [unowned self] item in
@@ -2756,7 +3076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       }
     }
     actions.notice = { [unowned self] text, warning in
-      island.show(text, tone: warning ? .warning : .info)
+      island.show("\(text)", tone: warning ? .warning : .info)
     }
     actions.edit = { [unowned self] item in
       Task {
@@ -2818,22 +3138,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       // 新画的马赛克打进存下的原图（E6）：用遮罩里这张没画标注的，不再读盘。
       // 编号要等历史记完（刚拼好的长截图是并行记的）：另起任务等，不挡出图（同截图那条路）
       let remembered = Task { await history?() }
+      // 裁过（X17）：历史里换成裁好的原图（重写原图、尺寸），标注已经平移到它的坐标里
+      let cropped = annotateOverlay?.isCropped == true
+      let original = cropped ? annotateOverlay?.historyOriginal ?? original : original
       Task {
         if let id = await remembered.value {
           shotHistory.update(
-            id, annotations: annotations, composed: image, original: original)
+            id, annotations: annotations, composed: image, original: original, cropped: cropped)
         }
       }
       Task {
         switch action {
         case .copy:
           guard let copied = await copyImage(image, scale: scale) else { return }
-          island.show("已复制长截图", detail: copied.detail, leading: Island.thumbnail(of: image))
+          island.show(
+            "\(FlyCard.Badge.copied.title)",
+            detail: copied.detail.map { "\($0)" as LocalizedStringResource },
+            leading: Island.thumbnail(of: image))
         case .save:
           guard let saved = await saveImage(image, scale: scale, asking: false) else { return }
           markSaved(remembered, at: saved.url)
           island.show(
-            FlyCard.Badge.saved(saved.url).title, detail: saved.url.lastPathComponent,
+            "\(FlyCard.Badge.saved(saved.url).title)", detail: "\(saved.url.lastPathComponent)",
             leading: Island.thumbnail(of: image), actions: .file(saved.url))
         case .saveAs:
           if let saved = await saveImageAs(image, scale: scale) {
@@ -2879,12 +3205,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   /// 有「屏幕录制」授权（截图家族、录系统声音开始前查）；没有就同设置 › 通用、引导里的授权按钮：请求一次（系统框只弹一次，
   /// 所以同时打开系统设置的「屏幕录制」）+ 警告岛说 feature 要用，返回 false
-  private func screenRecordingAllowed(for feature: String) -> Bool {
+  private func screenRecordingAllowed(for feature: LocalizedStringResource) -> Bool {
     guard !Permissions.isScreenRecordingAllowed else { return true }
     Permissions.requestScreenRecording()
     Permissions.Kind.screenRecording.openSettings()
     island.show(
-      "需要「屏幕录制」授权", detail: "\(feature)要用，授权后可能要重新打开本 App", tone: .warning,
+      "需要「屏幕录制」授权", detail: "\(String(localized: feature))要用，授权后可能要重新打开本 App",
+      tone: .warning,
       actions: [.settings(for: .screenRecording)])
     return false
   }
@@ -2893,7 +3220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// key 窗口（还开着的话；只 makeKey，不激活本 App）。没授权 / 截屏失败时用刘海提示，返回 nil。
   /// 框选期间别的热键会弹出浮层抢走 key（遮罩就收不到 Esc）；设置里正在录快捷键时热键本来就停着，结束后不能替它恢复
   private func frozenSelection<T>(
-    _ feature: String, _ select: ([ScreenCapture.Shot]) async -> T?
+    _ feature: LocalizedStringResource, cursor: Bool = false,
+    _ select: ([ScreenCapture.Shot]) async -> T?
   ) async -> T? {
     guard screenRecordingAllowed(for: feature) else { return nil }
     let shots: [ScreenCapture.Shot]
@@ -2901,14 +3229,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       // 截屏的系统服务不返回时最多等 5 秒（E22）：不然 isCapturing 一直为真，截图家族的热键全被静默忽略
       guard
         let frozen = try await ScreenCapture.within(
-          ScreenCapture.freezeTimeout, ScreenCapture.freeze)
+          ScreenCapture.freezeTimeout, { try await ScreenCapture.freeze(cursor: cursor) })
       else {
         island.show("截屏没有响应", detail: "请再试一次", tone: .warning)
         return nil
       }
       shots = frozen
     } catch {
-      island.show("截屏失败", detail: error.localizedDescription, tone: .error)
+      island.show("截屏失败", detail: "\(error.localizedDescription)", tone: .error)
       return nil
     }
     let hotKeysWereActive = hotKeys.isActive
@@ -2939,16 +3267,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   {
     // 图标被认成的单字（首页的剪贴板图标认成「目」）不翻、不擦（拍板 F1）
     guard let recognized = await recognizeForTranslation(image, droppingIcons: true) else {
-      return .init(message: "识别失败")
+      return .init(message: String(localized: "识别失败"))
     }
     let segments = await ScreenshotOverlay.prepareSegments(of: recognized.lines, in: image)
-    guard !segments.isEmpty else { return .init(message: "没有识别到文字") }
+    guard !segments.isEmpty else { return .init(message: String(localized: "没有识别到文字")) }
     do {
       let translations = try await translateSegments(segments, source: recognized.text)
       var composed = await ScreenshotOverlay.render(
         image, segments: segments, translations: translations, pixelsPerPoint: pixelsPerPoint)
       guard composed.image != nil || !composed.leftovers.isEmpty else {
-        return .init(message: "合成失败")
+        return .init(message: String(localized: "合成失败"))
       }
       // 卡片的「拷贝译文」拷全部段（纯符号段原样占位，不算）
       composed.translation = zip(segments, translations)
@@ -2958,9 +3286,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return composed
     } catch {
       guard !Task.isCancelled, !(error is CancellationError) else {
-        return .init(message: "已取消")
+        return .init(message: String(localized: "已取消"))
       }
-      island.show("翻译失败", detail: error.localizedDescription, tone: .error)
+      island.show("翻译失败", detail: "\(error.localizedDescription)", tone: .error)
       return .init(message: error.localizedDescription)
     }
   }
@@ -2998,7 +3326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   /// 截图翻译盖回时的进度岛：和划词翻译并替换那条「翻译中…」分开（同名的话进度会写到那条上）
-  private static let overlayTitle = "截图翻译中…"
+  private static let overlayTitle: LocalizedStringResource = "截图翻译中…"
 
   /// 逐段翻译（原位覆盖用）：整段原文检测一次语种，各段用同一个方向；同时最多 3 段一起请求（inParallel），
   /// 每段按顺序试启用的服务（没折叠的在前）。
@@ -3009,7 +3337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // 没折叠的服务先试（浮窗里折叠 = 不自动翻译，排第一的贵模型折叠了也不先用它）
     let services = coordinator.orderedServices
     guard !services.isEmpty else {
-      throw TranslateError(message: "没有启用的翻译服务，先在设置 › 翻译里开一个")
+      throw TranslateError(message: String(localized: "没有启用的翻译服务，先在设置 › 翻译里开一个"))
     }
     let plan = TranslateCoordinator.plan(for: source, wordMode: false).request
     // 纯符号段不发请求（有道这类接口会回错误码，一段失败整张图就白翻了），原样占位；覆盖那一步也会跳过它
@@ -3084,7 +3412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private nonisolated static func translateSegment(
     _ request: TranslateRequest, services: [TranslateService]
   ) async throws -> (text: String, service: TranslateService) {
-    var failure: Error = TranslateError(message: "翻译失败")
+    var failure: Error = TranslateError(message: String(localized: "翻译失败"))
     for service in services {
       try Task.checkCancellation()
       do {
@@ -3105,17 +3433,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   /// 识字慢的时候先出「识别中」（第二轮体检 R3）：常见选区 0.04–0.13 s，不出；整屏密集文字约 0.9 s，过了 0.3 s 还没出结果
   /// 刘海岛先说一声，结果出来原地换掉（识字、截图翻译、钉图上的识字 / 翻译都走这里）
-  private static let recognizingTitle = "识别中…"
+  private static let recognizingTitle: LocalizedStringResource = "识别中…"
   /// 新装、系统更新后第一次识字：系统要先现场编译识字模型（OCR.prepare，冷的约一分钟）。岛一直挂着、每秒报等了多久，
   /// 不然看着像卡死了
-  private static let preparingTitle = "正在准备识字模型…"
+  private static let preparingTitle: LocalizedStringResource = "正在准备识字模型…"
 
   private func recognizing<T>(_ work: () async -> T) async -> T {
     // 进程内识过字，模型就留在内存里：这一路不一定开关面板（⌥O 识字、钉图上识字），自己记得回头放掉
     defer { idleReclaim.schedule() }
+    await prepareRecognition()
+    return await island.showIfSlow(Self.recognizingTitle, work)
+  }
+
+  /// 识字模型还没加载：刘海岛上说一声、按秒报已等多久，等它加载好（第一次要一分钟左右）
+  private func prepareRecognition() async {
     if !OCR.isPrepared() {
-      let note = "第一次识字要等一分钟左右，以后就快了"
-      island.show(Self.preparingTitle, detail: note, tone: .progress, symbol: "text.viewfinder")
+      let note = String(localized: "第一次识字要等一分钟左右，以后就快了")
+      island.show(
+        Self.preparingTitle, detail: "\(note)", tone: .progress, symbol: "text.viewfinder")
       let started = ContinuousClock.now
       let ticker = Task { [island] in
         while !Task.isCancelled {
@@ -3127,7 +3462,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       await OCR.prepare()
       ticker.cancel()
     }
-    return await island.showIfSlow(Self.recognizingTitle, work)
   }
 
   /// 有二维码 / 条码就复制它的内容，否则复制识别出的文字（设置里开了就把换行合成一段）；记进剪贴板历史
@@ -3150,9 +3484,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     Paster.write(string: text, record: true)
     island.show(
-      codes.isEmpty ? "已复制" : "已复制二维码", detail: Island.excerpt(text),
+      codes.isEmpty ? "已复制" : "已复制二维码",
+      detail: "\(Island.excerpt(text))",
       symbol: codes.isEmpty ? nil : "qrcode")
   }
+
+  /// 访达右键「拷贝图中文字」（2026-11-17 拍板 C1）：一张张认，每张同截图识字（有二维码 / 条码拷它的内容，没有就识字、
+  /// 按设置接不接行），几张之间空一行；拷进剪贴板、记进历史，刘海岛说一声。排进访达右键那条队（FileMoves.enqueue）：
+  /// 超过 1 秒挂进度条「3/20」和「停止」，停了什么都不拷。一次最多 maxImageFiles 张；还没从 iCloud 下载下来的不读
+  /// （一读就要整个下载，同解压不预读没下载的包）
+  private func copyRecognizedText(inFiles files: [URL]) {
+    let urls = Array(files.prefix(Self.maxImageFiles))
+    let joined = UserDefaults.standard.bool(forKey: Prefs.ocrJoinLines)
+    FileMoves.enqueue("正在识别图里的文字…", detail: "0/\(urls.count)", island: island) {
+      [unowned self] report in
+      defer { idleReclaim.schedule() }
+      await prepareRecognition()
+      var texts: [String] = []
+      var codesOnly = true
+      var unreadable = 0
+      for (index, url) in urls.enumerated() where !Task.isCancelled {
+        report(Double(index) / Double(urls.count), "\(index)/\(urls.count)")
+        let cloud = try? url.resourceValues(forKeys: [
+          .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ])
+        guard
+          !(cloud?.isUbiquitousItem == true
+            && cloud?.ubiquitousItemDownloadingStatus == .notDownloaded),
+          let image = await OCR.image(at: url)
+        else {
+          unreadable += 1
+          continue
+        }
+        let codes = await OCR.barcodes(in: image)
+        if !codes.isEmpty {
+          texts.append(codes.joined(separator: "\n"))
+          continue
+        }
+        codesOnly = false
+        guard let lines = await OCR.recognizeLines(in: image) else {
+          unreadable += 1
+          continue
+        }
+        let text = OCR.text(lines, joined: joined)
+        if !text.isEmpty { texts.append(text) }
+      }
+      return (
+        texts: texts, codesOnly: codesOnly, unreadable: unreadable, stopped: Task.isCancelled
+      )
+    } finish: { [unowned self] result in
+      guard !result.stopped else {
+        return island.show("已停止识别", detail: "什么都没拷", tone: .info)
+      }
+      let text = result.texts.joined(separator: "\n\n")
+      guard !text.isEmpty else {
+        let title: LocalizedStringResource =
+          result.unreadable < urls.count
+          ? "没有识别到文字" : urls.count == 1 ? "没能读这张图" : "这几张图都没能读"
+        return island.show(title, tone: .warning)
+      }
+      Paster.write(string: text, record: true)
+      let title: LocalizedStringResource =
+        result.codesOnly
+        ? "已复制二维码" : result.texts.count > 1 ? "已复制 \(result.texts.count) 张图里的文字" : "已复制"
+      // 有没读成的、超过上限没认的：照实说（不然以为全拷上了）
+      let unread = result.unreadable
+      let capped = files.count > urls.count
+      let detail: LocalizedStringResource =
+        if unread > 0 && capped {
+          "有 \(unread) 张没能读；一次最多认 \(Self.maxImageFiles) 张，后面的没认"
+        } else if unread > 0 {
+          "有 \(unread) 张没能读（读不了，或者还没从 iCloud 下载）"
+        } else if capped {
+          "一次最多认 \(Self.maxImageFiles) 张，后面的没认"
+        } else {
+          "\(Island.excerpt(text))"
+        }
+      island.show(
+        title, detail: detail, tone: unread > 0 || capped ? .warning : .success,
+        symbol: result.codesOnly ? "qrcode" : nil)
+    }
+  }
+
+  /// 访达右键「拷贝图中文字」一次最多认几张（一张 0.2–0.5 s，再多就让人分几次）
+  private static let maxImageFiles = 50
 
   /// 编成 PNG（截图那条路上拷贝 / 存储 / 常驻缩略图 / 历史共用这一份，R6）；失败时岛说一声
   private func encodePNG(_ image: CGImage, scale: CGFloat) async -> Data? {
@@ -3228,7 +3643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func saveImageAs(_ image: CGImage, png: Data) async -> URL? {
     guard let url = await savePNG(png, asking: true) else { return nil }
     island.show(
-      "已保存", detail: url.lastPathComponent, leading: Island.thumbnail(of: image),
+      "已保存", detail: "\(url.lastPathComponent)", leading: Island.thumbnail(of: image),
       actions: .file(url))
     return url
   }
@@ -3246,7 +3661,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         !ScreenshotOutput.isPermissionDenied(error)
         ? [] : asking ? [.settings(for: .filesAndFolders)] : saveFolderActions
       island.show(
-        "保存失败，截图已复制到剪贴板", detail: error.localizedDescription, tone: .warning,
+        "保存失败，截图已复制到剪贴板", detail: "\(error.localizedDescription)", tone: .warning,
         actions: actions)
       return nil
     }
@@ -3273,12 +3688,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var png = Data()
     // 挂到晾衣绳上的那一下（land 时才有记历史的任务，闭包按引用拿着它）
     var peg: () -> Void = {}
+    // 记历史的那个任务（角落缩略图的「改标注」等它的编号，X7）
+    var history: Task<UUID?, Never>?
     let pixels = CGSize(width: image.width, height: image.height)
     let landing = shotLanding(pixels: pixels, frame: frame)
     let linger: (CGRect, FlyCard.Badge) -> Void = { [weak self] rect, badge in
       guard let self else { return }
       switch landing.placement {
-      case .corner: shelf.add(image, png: png, scale: scale, source: frame, at: rect, badge: badge)
+      case .corner:
+        shelf.add(
+          image, png: png, scale: scale, source: frame, at: rect, badge: badge, history: history)
       case .clothesline: peg()
       case .none: break
       }
@@ -3291,6 +3710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       flight.onShow = { [weak self] in self?.statusItem?.pop() }
       return { [weak self] badge, data, remembered in
         png = data
+        history = remembered
         if let self { peg = pegger(remembered, on: landing.screen) }
         flight.land(badge)
       }
@@ -3298,10 +3718,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     return { [weak self] badge, data, remembered in
       guard let self else { return }
       png = data
+      history = remembered
       peg = pegger(remembered, on: landing.screen)
       // 不飞就没有落地的角标：结果用刘海说（Whisker：减弱动态效果时飞行卡片改成轻提示；岛自己会播报）
       let actions: [Island.Action] = if case .saved(let url) = badge { .file(url) } else { [] }
-      island.show(badge.title, leading: Island.thumbnail(of: image), actions: actions)
+      island.show("\(badge.title)", leading: Island.thumbnail(of: image), actions: actions)
       guard keeps, let rect = landing.slot ?? FlyCard.landingRect(for: frame) else { return }
       linger(rect, badge)
     }
@@ -3365,11 +3786,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     settingsNavigation.path = [id]
   }
 
-  /// 打开 设置 › 通用 › 功能、滚到这个插件的卡（启动器「添加…插件」，拍板 A4）：不直接添加，先看清要什么授权
+  /// 打开这个插件的介绍页（启动器「添加…插件」，插件拍板 A4、插件页改版 G1）：不直接添加，先看清能做什么、要什么授权
   func showPlugin(_ plugin: Feature) {
-    showSettings(page: .general)
-    settingsNavigation.path = [FeaturesPage.route]
-    settingsNavigation.focusedPlugin = plugin
+    showSettings(page: .plugins)
+    // 设置窗挂着表单（速查表、确认框）时 show 不换页：别把介绍页推进别的页的栈里
+    guard settingsNavigation.page == .plugins else { return }
+    settingsNavigation.path = [PluginsPage.route(plugin)]
   }
 
   /// 打开设置窗（page 为 nil 保持上次的页；onboarding 盖上欢迎引导）：先按正常隐藏路径收起浮层
@@ -3407,14 +3829,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let freshActions = Set(fresh.flatMap(\.actions))
     func addExtra(_ extra: MenuExtra) {
       let item = menu.addAction(
-        extra.title(pinsHidden: state.pinsHidden == true), symbol: extra.symbol,
+        extra.titleResource(pinsHidden: state.pinsHidden == true), symbol: extra.symbol,
         color: NSColor(extra.color), key: extra == .settings ? "," : extra == .quit ? "q" : ""
       ) { [unowned self] in run(extra) }
       if let on = extra.isOn(state) { item.state = on ? .on : .off }
       if extra == .settings, WhatsNew.inSettingsOnly(fresh) { item.badge = WhatsNew.menuBadge }
     }
-    // 有新版本时最上面一项就是更新（强调色：现在该操作的东西）
-    if let release = updater.available {
+    // 有新版本时最上面一项就是更新（强调色：现在该操作的东西）；跳过了的版本不挂（X11）
+    if let release = updater.nudge {
       menu.addAction(
         "更新到 \(release.version)…", symbol: "arrow.down.circle.fill", color: NSColor(Style.brand)
       ) { [unowned self] in Task { await updater.install() } }
@@ -3427,10 +3849,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addReminderMenu(to: menu, isNew: freshActions.contains(.reminderNew))
         continue
       }
+      if section.actions == [.keepAwake] {
+        addKeepAwakeMenu(to: menu, isNew: freshActions.contains(.keepAwake))
+        continue
+      }
       if section.actions == [.statusScreen] {
         let family = HotKeyAction.statusScreen
         let color = NSColor(family.color)
-        let item = menu.addAction(family.title, symbol: family.symbol, color: color) {}
+        let item = menu.addAction(family.titleResource, symbol: family.symbol, color: color) {}
         if freshActions.contains(family) { item.badge = WhatsNew.menuBadge }
         let submenu = NSMenu()
         let hotKey = hotKeys.bindings[family]
@@ -3444,7 +3870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (row, preset) in state.statusPresets.enumerated() {
           let binding = state.statusEntersFirst && row == 0 ? hotKey : nil
           let entry = submenu.addAction(
-            preset.title, symbol: StatusPreset.plainSymbol,
+            "\(preset.displayTitle)", symbol: StatusPreset.plainSymbol,
             color: color, key: binding?.menuKeyEquivalent ?? "",
             modifiers: binding?.modifierFlags ?? []
           ) { [unowned self] in statusScreen.enter(preset) }
@@ -3459,13 +3885,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       }
       // 只有一项、节标题和它同名的不画节标题（F40：启动台那一节；关掉剪贴板后只剩「启动器」的那一节同理；
       // 状态屏那一节在上面单独处理）
-      if !(section.actions.count == 1 && section.title == section.actions[0].title) {
+      // 按目录的 key 比（不比显示的字）：节标题是「启动台」、唯一那一项也是「启动台」
+      if !(section.actions.count == 1 && section.key == section.actions[0].titleResource.key) {
         menu.addItem(.sectionHeader(title: section.title))
       }
       for action in section.actions {
         let binding = hotKeys.bindings[action]
         let item = menu.addAction(
-          action.title(recording: state.isRunning(action)), symbol: action.symbol,
+          "\(action.title(recording: state.isRunning(action)))", symbol: action.symbol,
           color: NSColor(action.color),
           key: binding?.menuKeyEquivalent ?? "", modifiers: binding?.modifierFlags ?? []
         ) { [unowned self] in run(action) }
@@ -3491,7 +3918,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let name = front.localizedName ?? id
     let blocked = HotKeyBlock.list(HotKeyBlock.stored).contains { $0.bundleID == id }
     menu.addAction(
-      blocked ? "在「\(name)」中恢复快捷键" : "在「\(name)」中停用快捷键", symbol: "keyboard",
+      blocked ? "在「\(name)」中恢复快捷键" : "在「\(name)」中停用快捷键",
+      symbol: "keyboard",
       color: NSColor(Style.Family.general)
     ) { [unowned self] in
       HotKeyBlock.change { list in
@@ -3540,7 +3968,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     WhatsNew.adopt(upgradingFrom: last, to: AboutTab.version, defaults: defaults)
     defaults.set(AboutTab.version, forKey: Prefs.lastSeenVersion)
     if last != AboutTab.version {
-      let summary = AboutTab.releases.first { $0.version == AboutTab.version }?.summary
+      let summary = AboutTab.releases.first { $0.version == AboutTab.version }?.localizedSummary
       var actions = [
         Island.Action("看更新了什么", opens: true) { [unowned self] in showSettings(page: .about) }
       ]
@@ -3549,14 +3977,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       var detail = summary.map(Island.excerpt)
       if NoteSyncer.isUpgrade(.standard) {
         toldSyncUpgrade = true
-        detail = [detail, "现在也能同步设置、片段和收藏这些了，到 设置 › 通用「同步」里勾上"]
-          .compactMap { $0 }.joined(separator: "；")
+        detail = [detail, String(localized: "现在也能同步设置、片段和收藏这些了，到 设置 › 通用「同步」里勾上")]
+          .compactMap { $0 }.joined(separator: Self.semicolon)
         actions.append(openSyncSettings)
       }
+      // 升级时替用户保持了中文（InterfaceLanguage.keepChineseOnUpgrade）：说一声能换成英文
+      if InterfaceLanguage.keptChinese {
+        detail = [detail, String(localized: "现在也有英文界面了，在 设置 › 通用「语言」里换")]
+          .compactMap { $0 }.joined(separator: Self.semicolon)
+      }
       island.show(
-        "已更新到 \(AboutTab.version)", detail: detail, tone: .success, symbol: "sparkles",
+        "已更新到 \(AboutTab.version)", detail: detail.map { "\($0)" }, tone: .success,
+        symbol: "sparkles",
         actions: actions)
     }
+  }
+
+  /// 一串加了引号的名字（「A」「B」）里两个名字之间的那一段：中文「」「」、英文「”, “」。外面再包一层「%@」。
+  /// 默认值不能是空串：查不到译文、默认值又是空的时候系统显示 key 本身（实测）
+  private static var quotedSeparator: String {
+    String(localized: "list.quoted", defaultValue: "」「", comment: "「A」「B」这样一串名字里两个名字之间的那一段")
+  }
+
+  /// 「已更新到」那座岛上几句话之间的分隔：中文「；」、英文「; 」
+  private static var semicolon: String {
+    String(localized: "list.semicolon", defaultValue: "；", comment: "两句话并成一句时中间的分号")
   }
 
   /// 首次安装的引导走完了（「开始使用」、Esc、关掉设置窗）：这时才记「看过这一版」，做到第几屏的记录删掉（E1）
@@ -3694,9 +4139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     } catch {
       let alert = NSAlert()
       alert.alertStyle = .critical
-      alert.messageText = "无法打开数据库"
-      alert.informativeText =
-        "\(error)\n\n数据目录：\((directory.path as NSString).abbreviatingWithTildeInPath)"
+      alert.messageText = String(localized: "无法打开数据库")
+      let folder = (directory.path as NSString).abbreviatingWithTildeInPath
+      alert.informativeText = String(localized: "\(String(describing: error))\n\n数据目录：\(folder)")
       NSApp.activate()
       alert.runModal()
       exit(1)
@@ -3735,9 +4180,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       Log.storage.error("便签这次用不了：\(error)")
       guard let notice = NotesRecovery.notice(for: error, directory: directory) else { return nil }
       if case .newer = error {
-        island.show(notice.title, detail: notice.text, tone: .warning)
+        island.show("\(notice.title)", detail: "\(notice.text)", tone: .warning)
       } else {
-        _ = show(notice.title, notice.text, ["好"])
+        _ = show(notice.title, notice.text, [String(localized: "好")])
       }
       return nil
     }

@@ -10,7 +10,7 @@
 - **功能**（括号里是加进来的版本；每个都能在 设置 › 通用 › 功能 里整个关掉或移除，`Shell/Feature.swift`；新装只开剪贴板、启动器、翻译、截图，侧栏分组、关着的标「已关闭」，PLAN §10「功能管理」；2026-11-13 起只有剪贴板、启动器、翻译、截图、录制是功能，便签、提醒、状态屏、启动台、程序坞预览、访达右键、保持唤醒、刘海岛（点刘海那一张、两边的活动、系统提示；岛上的提示不算）是插件，PLAN §10「插件与保持唤醒」）：
   - 剪贴板历史 `Clipboard/`（0.1.0）
   - 翻译 `Translate/`：划词 / 输入 / 复制即译 / 截图翻译（0.1.0）
-  - 启动器 `Launcher/`：⌥Space 的搜索框（0.1.0）；脚本命令（0.8.0，2026-11-07：一个脚本一条命令、9 个自带脚本、设置里「命令」表改别名和开关，PLAN §10「脚本命令」，单测 `ScriptCommandTests`、截图自检 `SnapshotProbeTests/launcherScripts()`）
+  - 启动器 `Launcher/`：⌥Space 的搜索框（0.1.0）；脚本命令（0.8.0，2026-11-07：一个脚本一条命令、9 个自带脚本（下一版起 awake 换成保持唤醒插件，剩 8 个）、设置里「命令」表改别名和开关，PLAN §10「脚本命令」，单测 `ScriptCommandTests`、截图自检 `SnapshotProbeTests/launcherScripts()`）
   - 截图 `Screenshot/`：框选、标注、识字、钉图、长截图（0.1.0）；录屏、录音（0.3.0）；截图历史、长图标注（0.7.0）
   - 状态屏 `StatusScreen/`：盖住所有屏幕显示告示、拦住键盘鼠标（0.4.0）
   - 便签 `Notes/`：屏幕边缘的便签，⌥N 快速记一条（0.5.0）
@@ -18,11 +18,11 @@
   - 程序坞预览 `DockPreview/`：停在程序坞图标上弹出它所有窗口的缩略图，默认关（0.7.0）
   - 晾衣绳 `Screenshot/Clothesline*.swift`：截完图挂到屏幕顶上的绳子，和右下角的缩略图二选一（0.7.0）
   - 提醒 `Reminders/`：一次 / 每天 / 每周 / 每月 / 每隔一阵的定时提醒，刘海岛、边框、全屏或直接进入状态屏，启动器里一句话建（2026-11-04 立项，三批在 `reminder-wip` 做完，PLAN §10「提醒」）
-  - 保持唤醒（issue #3，第一个插件）：2026-11-13 用户让它推到 0.9.0 之后，代码在分支 `plugins-wip`（`0ec42986`），0.9.0 里拆掉了、自带的 awake 脚本照旧。**以后新的大模块都做成内置插件**：新装升级都默认不添加，在 设置 › 通用 › 功能 下面的插件卡片里添加（规矩在 mac-native §1「插件」，PLAN §10「插件与保持唤醒」）
+  - 保持唤醒 `KeepAwake/`（**第一个插件**，2026-11-12 做好；0.9.0 发布前拆出去，2026-11-16 回到下一版，自带的 awake 脚本随之删掉）：手动开一段（无限期 / 30 分钟–5 小时 / 到某一刻）或按时段自动开，`ProcessInfo.beginActivity`；菜单栏、主界面、启动器「awake 2小时」、全局快捷键。**以后新的大模块都做成内置插件**：新装升级都默认不添加，在 设置 › 通用 › 功能 下面的插件卡片里添加（规矩在 mac-native §1「插件」，PLAN §10「插件与保持唤醒」）
   - 全局同步（设置 › 通用「同步」）：同步文件夹，便签（0.6.0）之外设置、快捷键、片段和收藏等也能同步（0.7.0）；能直接连 WebDAV 服务器（0.9.0，issue #18：本机一份镜像、pull → 照文件夹同步合 → push，`Notes/NoteSyncServer.swift`，PLAN §10「WebDAV 同步」）
   - 刘海岛交互：提示能悬停展开、带按钮，点刘海叫出最近的提示（0.7.0）；刘海岛扩展（下一版，2026-11-12 立项照 Atoll 拍板、11-13 开工，`island-atoll-wip`，PLAN §10「刘海岛扩展」）：录制计时、长任务、提醒倒数这类「活动」收起时挂在刘海两侧的耳朵上（`Shell/IslandActivity.swift`），没刘海时挂菜单栏，设置 › 刘海岛（PR #17）能调快捷动作、关掉点刘海、开系统提示；新 MacBook Pro 的系统灵动岛上让位
   - 访达右键 `FinderMenu/` + 扩展 target `macos/KittyToolsFinder/`：访达右键第一层的「拷贝路径」「在“X”中打开」「新建文件 ▸」，加上右键扩充的拷贝名称、移动到 / 复制到、剪切 / 粘贴、压缩 / 解压到这里、修复乱码文件名（这几项默认开）和替身到桌面、显示隐藏文件、隐藏 / 扩展名、拷贝哈希、彻底删除（默认关）；整个功能默认关（下一版，2026-11-08 立项，`finder-wip` 分批做；扩展只画菜单、开沙盒、Swift 5 语言模式，规矩在 mac-native §2 §3 §6，PLAN §10「访达右键」）
-- **版本**：已发布到 0.9.0（latest，2026-11-14：插件、刘海岛扩展和完善、截图标注、WebDAV 同步等，PLAN §12；0.8.1 是 2026-11-10、0.8.0 是 2026-11-09）；`MARKETING_VERSION` 是 0.9.0。各版真机手测都没走完。
+- **版本**：已发布到 0.10.0（latest，2026-11-18：英文界面、四个新插件、刘海岛认系统的专注模式和一批新开关、翻译 30 种语言等，PLAN §12；0.9.0 是 2026-11-14、0.8.1 是 2026-11-10）。各版真机手测都没走完。
 - 现状、待手测、下一步看 PLAN §12（各族立项日期、批次进度的原文在 §12「各族进度摘要（原 AGENTS 项目概述）」）；发版前走的「真机回归清单」和正在验收的那一轮手测看 `macos/HANDTEST.md`（到 2026-10-30 的发版冒烟清单和各批手测原样归档在 `macos/docs/archive/HANDTEST-2026-10.md`，编号不变，代码注释、规则里「HANDTEST X 第 N 条」都指那里）；拍板和每族的规矩看 PLAN §10 和对应的 `mac-*` 规则。
 - Bundle ID `com.yy.kitty-tools.native`（Debug `com.yy.kitty-tools.native.dev`），不再改（改了会丢偏好、钥匙串和授权）；产品名 / .app 名 `Kitty Tools`（Debug `Kitty Tools Dev`）。和 Tauri 旧版同名：安装前先删掉 /Applications 里旧版的 `Kitty Tools.app`。
 - **规格**：各 `mac-*` 规则（界面与动效按 `mac-whisker`）+ 对标产品（启动器 Alfred / Raycast、翻译 Bob、截图 iShot / CleanShot、录屏 CleanShot / ⌘⇧5、录音 QuickTime / iShot、剪贴板 Paste）。`macos/PLAN.md` 只留仍有效的（§2 技术栈、§4 架构与文件表、§8 打包、§10 约束与决定、§11 实现原则与旧逻辑问题、§12 现状），历史在 `macos/docs/archive/`。
@@ -33,6 +33,7 @@
 - Swift 6.2，Swift 6 语言模式，默认 `MainActor` 隔离 + approachable concurrency。
 - SwiftUI（`MenuBarExtra`、`Form`、`@Observable`）+ AppKit（`NSPanel` 浮层、设置窗）。
 - 系统 libsqlite3、钥匙串、Carbon 热键、AX、Vision、NaturalLanguage 等 Apple 框架，完整清单见 PLAN §2。
+- 界面文字：String Catalog（`Resources/Localizable.xcstrings`，开发语言 zh-Hans、中文原文当 key），先支持英文（2026-11-15 立项，分支 `i18n-wip` 第 0–9 批做完，随 0.10.0；做法和术语表 `macos/TRANSLATION.md`）。
 - 第三方依赖：运行时 0 个，开发期 0 个。
 - Xcode 26.3 工程，构建设置全在 xcconfig；`hdiutil` 打 DMG；Apple Development 签名（Team `HTX9F4KG39`），不公证。
 
@@ -47,7 +48,9 @@ macos/                       # 本分支唯一开发区
 ├── KittyToolsTests/         # 纯函数单测（Swift Testing），M2 起建
 ├── Config/                  # Base/Debug/Release.xcconfig、Info.plist（局部）、Secrets.xcconfig（不入库）
 ├── build-dmg.sh             # 打包：archive → 自检 → DMG + App 内更新用的 zip → notes
-├── status-emoji.swift       # 状态屏的动画表情：下载好的动画 PNG → Resources/status-emoji-*.heics（只用 ImageIO）
+├── sync-strings.sh          # 构建一遍、把代码里能本地化的字面量并进 String Catalog（xcstringstool sync）
+├── TRANSLATION.md           # 多语言：代码怎么写、每批的流程、英文口径、术语表、不翻的清单
+├── status-emoji.swift       # 状态屏打进包里的那几个动画表情（自带的状态和示例提醒用的 + 眼睛）：下载好的动画 PNG → Resources/status-emoji-*.heics（只用 ImageIO）；别的在 release emoji-pack-1，用到时下载
 ├── emoji-pack.swift         # 动画表情包：Fluent 动画全部 746 个 → 上传到 release emoji-pack-<版本> 的 HEICS + Resources/emoji-pack.json 对照表（中文名用 CLDR）+ Resources/emoji-thumbs/ 缩略图
 ├── brand-icons.swift        # 品牌图标：角色「探头」的 AppIcon 10 张 + 菜单栏剪影 StatusIcon + DMG 背景（CoreGraphics 生成）
 ├── .swift-format
@@ -77,6 +80,12 @@ xcodebuild -project macos/KittyTools.xcodeproj -scheme KittyTools test
 # 见 RecordingProbeTests.swift 文件头；文件头没写的 formatTake(_:)（清晰度 / 编码各录约 2 s、再各压缩一遍，第二轮体检第 5 批）不用 _MIC
 TEST_RUNNER_KITTY_LIVE_RECORD_DIR=/tmp/kitty-record xcodebuild -project macos/KittyTools.xcodeproj -scheme KittyTools \
   test -only-testing:KittyToolsTests/RecordingProbeTests
+
+# 多语言：把新写的界面文字并进 String Catalog（构建一遍再 xcstringstool sync；Xcode 打开工程时自己做）。填完英文再跑一次收拾格式
+macos/sync-strings.sh macos/build/dd-strings
+# 英文界面的截图自检：任意截图自检函数加 -testLanguage en -testRegion US（单测宿主平时固定简体中文）
+TEST_RUNNER_KITTY_SNAPSHOT_DIR=/tmp/kitty-shots-en xcodebuild -project macos/KittyTools.xcodeproj -scheme KittyTools \
+  test -testLanguage en -testRegion US -only-testing:'KittyToolsTests/SnapshotProbeTests/home()'
 
 # 核对关键构建设置（期望 6.0 / 15.0 / NO / MainActor）
 xcodebuild -project macos/KittyTools.xcodeproj -scheme KittyTools -configuration Release -showBuildSettings \
@@ -174,6 +183,13 @@ TEST_RUNNER_KITTY_LIVE_NOW_PLAYING=1 xcodebuild -project macos/KittyTools.xcodep
 TEST_RUNNER_KITTY_LIVE_MEDIA_KEYS=1 xcodebuild -project macos/KittyTools.xcodeproj -scheme KittyTools \
   test -only-testing:'KittyToolsTests/MediaKeysTests/liveSwallowsVolumeKey()'
 
+# 平滑滚动插件的实机自检（按需，约 3 秒，要测试宿主有「辅助功能」授权；**跑之前先问用户**）：真的起滚动线程、建事件拦截（探针模式：
+# 真的滚轮原样放过），发几个带记号的合成滚轮，量第一帧多快、一共滑多远、主线程卡半秒时帧还出不出、停了线程退没退；帧也吞掉，
+# 到不了别的 App。改了 SmoothScroll/ 后跑。另有只听不改的 record()：TEST_RUNNER_KITTY_SMOOTH_SCROLL_RECORD=<秒>，这几秒里
+# 用真鼠标拨滚轮，打印系统给的行数 / 像素 / 定点（定「每行 40 点、一格至少一行」那两个数用）
+TEST_RUNNER_KITTY_LIVE_SMOOTH_SCROLL=1 xcodebuild -project macos/KittyTools.xcodeproj -scheme KittyTools \
+  test -only-testing:'KittyToolsTests/SmoothScrollTests/liveProbe()'
+
 # 刘海岛动画的掉帧探针（按需；**屏幕顶部正中会出现岛约 8 秒**，不动鼠标、不抢键盘）：measure() 挂显示链量主线程每拍的间隔，
 # 分阶段（出现、悬停展开、收起、开 / 收那一张、进行中换成结果）报掉了几帧，grep「island-frames」；recording() 要 Dev 版有
 # 「屏幕录制」授权，岛背后垫一块浅灰窗口逐帧抓刘海那一块，量形体的宽高（收起前停没停、换内容有没有先宽后窄、中途卡没卡），
@@ -209,7 +225,7 @@ swift macos/brand-icons.swift
 swift icons/build-icons.swift mac
 
 # 状态屏的动画表情：把下载好的 Microsoft Fluent Emoji Animated 动画 PNG 转成包里用的 HEICS（要加表情时才跑；
-# 原文件不进仓库，本机留在 macos/build/status-emoji/src/；清单在脚本和 StatusScreen/StatusEmoji.swift 两处）
+# 原文件不进仓库，本机留在 macos/build/status-emoji/src/；清单在脚本和 StatusScreen/StatusEmoji.swift 的 bundled 两处；2026-11-17 起只转打进包里的 7 个）
 swift macos/status-emoji.swift macos/build/status-emoji/src
 
 # 签名自检；辅助功能授权卡住时重置（按 bundle id，.app 改名不影响）
@@ -247,11 +263,12 @@ defaults delete com.yy.kitty-tools.native.dev folderAccessRequested
 ## 开发约定
 
 - 用中文回答用户；文档写中文，代码注释可以写中文。
+- **多语言**：界面文字照样写中文，但要用能本地化的写法、英文同一个提交补上；存下来要读回来比对的字不翻。动手前读 `macos/TRANSLATION.md`，红线在 mac-native §2「多语言」。
 - 每个入口文件头部写注释说明用途。
 - 禁止新增任何第三方依赖（SPM 包、构建 / 格式化工具都算）。
 - 刻意的简化写 `ponytail:` 注释，写明上限和升级路径。
 - commit 格式 `<type>: <description>`，type 取 feat / fix / ui / refactor / docs / perf / build / chore。**标题一行、70 字以内，空一行再写正文**：为什么改、改了什么、怎么验的都写进正文（会话开头会自动带上最近几条提交的标题，写长了每个会话都白读一遍）。旧提交不改。
-- **更新日志（必遵）**：改 `MARKETING_VERSION` 必须在 `macos/KittyTools/Resources/changelog.json` 追加该版本条目，`type` 只允许 feat / fix / perf / ui（refactor / build / chore 不进用户日志）；缺条目时 `build-dmg.sh` 直接中止。
+- **更新日志（必遵）**：改 `MARKETING_VERSION` 必须在 `macos/KittyTools/Resources/changelog.json` 追加该版本条目，`type` 只允许 feat / fix / perf / ui（refactor / build / chore 不进用户日志）；缺条目时 `build-dmg.sh` 直接中止。0.10.0 起中英两份（`summaryEn`、`textEn`，mac-native §7）。
 - 发布：本仓库 github.com/YyAdnBug/kitty-tools（不碰 Tauri 版的仓库），tag `macos-v*`，正式 release、标 latest，附 DMG、`_arm64.zip` 和更新清单 `macos-update.json`（App 内更新先读 latest 上的清单、读不到再走 API，mac-native §7）；不公证，发布说明固定附「系统设置 › 隐私与安全 › 仍要打开」步骤（只有第一次安装要，之后 App 内更新）。
 
 ## 给 agent 的工具

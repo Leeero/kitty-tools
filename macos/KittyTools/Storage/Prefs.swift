@@ -47,6 +47,8 @@ enum Prefs {
   static let launcherRecentCurrencies = "launcherRecentCurrencies"
   /// 启动器的脚本命令（2026-11-07 拍板 E2，默认开）：关掉后自带的和自己的脚本都不出现，内置命令不受影响
   static let launcherScripts = "launcherScripts"
+  /// 启动器搜索、运行系统的「快捷指令」（第四轮体检 X10，默认开；SystemShortcuts）
+  static let launcherShortcuts = "launcherShortcuts"
   /// 脚本命令另外添加的文件夹（换行分隔的路径，ScriptLibrary）：这台电脑自己的路径，**不注册默认值**（不导出、不同步）
   static let scriptFolders = "scriptFolders"
   /// 跑脚本用的 PATH：从用户的登录 shell 读到的那一份（ScriptRunner）；这台电脑自己的，**不注册默认值**
@@ -158,6 +160,12 @@ enum Prefs {
   static let screenshotToolStyles = "screenshotToolStyles"
   /// 截图（复制、保存、钉图）时放快门声；还要系统「播放用户界面音效」开着
   static let screenshotShutterSound = "screenshotShutterSound"
+  /// 截图带上鼠标指针（第四轮体检 X8，默认关；Windows ScreenshotCursor）：按快捷键那一刻的指针画进冻结帧。只管截图
+  /// （截图快捷键、截取上次区域）；识字、截图翻译不带（指针会挡字）
+  static let screenshotCursor = "screenshotCursor"
+  /// 截图、录屏时隐藏桌面图标（第四轮体检 X9，默认关；Windows CaptureHideDesktopIcons）：访达画桌面图标的那扇窗口
+  /// 不进冻结帧、不进录屏画面（ScreenCapture.desktopIconWindows）。识字、截图翻译用的同一张冻结帧，也不带
+  static let captureHideDesktopIcons = "captureHideDesktopIcons"
   /// 截完图放哪（2026-10-26 晾衣绳拍板 B1，ShotPlacement 的 rawValue）：corner 右下角的常驻缩略图（默认，
   /// 体检 D18 原来那样）/ clothesline 挂到屏幕顶上的晾衣绳上 / none 都不要（只进历史，飞行卡片落地停 0.9 s 就滑走）
   static let screenshotPlacement = "screenshotPlacement"
@@ -175,9 +183,22 @@ enum Prefs {
   /// 框选时保持屏幕原色（2026-11-06 用户：截图时像蒙了一层粉色滤镜，取色不友好）：打开后不压暗、悬停的窗口只描边不染色、
   /// 放大镜的十字带只描边。默认关（照 Whisker 压暗 + 粉色高亮）；截图、截图翻译 / 识字、录屏的框选都管
   static let screenshotKeepsColors = "screenshotKeepsColors"
+  /// 框选时显示操作提示（2026-11-17 拍板 A1–A2，默认开）：刚开始框选时屏幕上方那条 3 秒的提示（拖动框选 · 单击选中 · …）。
+  /// 关掉只关这一条：操作被挡下时临时说的那一句（flashHint）照出。截图、截图翻译 / 识字、录屏的框选都管
+  static let screenshotShowsHint = "screenshotShowsHint"
+  /// 框选时的放大镜（2026-11-17 拍板 B1–B3，Loupe 的 rawValue）：full 放大镜和色值（默认）/ loupe 只显示放大镜 / off 不显示。
+  /// 读它用 Loupe.current
+  static let screenshotLoupe = "screenshotLoupe"
+  /// 钉图上的字可以直接选（2026-11-17 拍板 C2，默认开）：鼠标第一次停到钉图上时用系统的实况文本认出图里的字，字上拖动选字、
+  /// ⌘C 拷贝；空白处照旧拖着挪，按住 ⌥ 在哪都能挪。关掉 = 原来的样子（任意处拖动都是挪）
+  nonisolated static let pinSelectsText = "pinSelectsText"
   /// 截图 / 录屏框选时悬停识别窗口里的元素（侧栏、列表、按钮，2026-11-08；拍板 D1 是默认开，同日用户改成默认关）：要辅助功能授权，
   /// 没授权时照旧只认窗口。关掉 = 只认窗口（原来的样子）。截图翻译 / 识字没有悬停，不管它
   static let screenshotFindsElements = "screenshotFindsElements"
+  /// 识别元素时也认网页里的元素（2026-11-15 第三轮拍板 B1，子开关、默认关）：浏览器内核的 App（Chromium、Electron）
+  /// 不主动交出网页里的元素，开着时第一次问一个 App 前读一次它的角色，请它打开最轻的一档辅助功能（一直开到它退出）。
+  /// 总开关关着时不管它
+  static let screenshotFindsWebElements = "screenshotFindsWebElements"
   /// 旧键（0.7.0 之前是「留不留常驻缩略图」一个布尔）：migrate 里升成上面那个三选一，关过它的人升级后是「都不要」
   static let screenshotShelfLegacy = "screenshotShelf"
   /// 保留截图历史（2026-10-26 拍板 B3，默认开）：关掉之后不再往历史里记，已经记下的留着（设置里另有「现在清空」）
@@ -222,6 +243,9 @@ enum Prefs {
   nonisolated static let screenRecordMicrophone = "screenRecordMicrophone"
   nonisolated static let screenRecordShowsClicks = "screenRecordShowsClicks"
   nonisolated static let screenRecordShowsKeys = "screenRecordShowsKeys"
+  /// 录屏用哪个麦克风（第四轮体检 X18，Windows RecordMicrophoneDevice）：AVCaptureDevice 的 uniqueID，没有 = 跟随系统
+  /// 输入。录音不看它（录音照旧录系统默认的输入）。设备编号是这台 Mac 的：**不注册默认值**，不导出、不同步
+  nonisolated static let screenRecordMicrophoneDevice = "screenRecordMicrophoneDevice"
   /// 录音的来源（录音第 6 批，设置 › 录制「录音」）：AudioRecorder.Source 的 rawValue——麦克风（默认）/ 系统声音 / 两者；
   /// 「两者」被拒麦克风授权时弹回「系统声音」（同录制条的麦克风开关）
   nonisolated static let audioRecordSource = "audioRecordSource"
@@ -231,7 +255,7 @@ enum Prefs {
 
   /// 识字后把同一段的换行合成一行（中日文直接连、其它加空格）
   static let ocrJoinLines = "ocrJoinLines"
-  /// 识字模型已经为哪个系统版本编好了（OCR.prepare；存系统版本字符串）。这台电脑自己的状态：不注册默认值、不跟着导出
+  /// 识字模型已经为哪个系统版本编好了（OCR.prepare；存 OCR.systemVersion「27.0.1 (26A434)」，不跟界面语言变）。这台电脑自己的状态：不注册默认值、不跟着导出
   nonisolated static let ocrPreparedSystem = "ocrPreparedSystem"
 
   /// 状态屏的状态列表（StatusPreset 数组的 JSON）。**不注册默认值**：没存过 / 解不出 / 为空时用自带的三个
@@ -254,7 +278,22 @@ enum Prefs {
   nonisolated static let reminders = "reminders"
   /// 每条提醒处理到哪一刻、「稍后」推到几点（ReminderState 的 JSON）。这台电脑自己的状态：不注册默认值、不导出
   nonisolated static let remindersState = "remindersState"
+  /// 专注模式滤镜上一次说的（ReminderFocusStyle 的 rawValue，照常时不存）：启动时问到系统之前先按它（ReminderFocus）。
+  /// 这台电脑自己的状态：不注册默认值、不导出、不同步
+  nonisolated static let remindersFocus = "remindersFocus"
+  /// 专注模式开着时到点的提醒怎么出（ReminderFocusStyle 的 rawValue：light 只在刘海上挂图标 / hold 结束后再响 / normal 照常；
+  /// 2026-11-17 拍板 B2，设置 › 提醒）：对任何专注模式都算（SystemFocus 读系统日志认出来的），某个模式的滤镜另选了的以滤镜为准。
+  /// 默认 light；跟着设置导出、同步
+  nonisolated static let remindersDuringFocus = "remindersDuringFocus"
+  /// 系统现在开着的专注模式（SystemFocus.Mode 的 JSON，都关了不存）：刚启动、往回查日志的那两秒先按它。这台电脑自己的状态：
+  /// 不注册默认值、不导出、不同步
+  nonisolated static let focusMode = "focusMode"
 
+  /// 保持唤醒（第一个插件，2026-11-12，KeepAwake/）：屏幕也不熄（默认开；关掉只防系统睡眠）
+  nonisolated static let keepAwakeDisplay = "keepAwakeDisplay"
+  /// 保持唤醒的定时（KeepAwakePlan.Schedule 的 JSON；注册默认值 "" = 关着、工作日 9:00–18:00）：跟着设置导出，
+  /// **不同步**（SettingsSync.localKeys，拍板 B4：台式机要、笔记本不一定要）
+  nonisolated static let keepAwakeSchedule = "keepAwakeSchedule"
   /// 点「稍后」推几分钟（设置 › 提醒，默认 5，C8）
   static let remindersSnoozeMinutes = "remindersSnoozeMinutes"
   /// 挑的系统表情有动画版时自动下载（EmojiPack，2026-11-05，默认开；设置 › 状态屏 / 提醒两页各一行）
@@ -337,6 +376,9 @@ enum Prefs {
   /// 全部便签窗口上次用的显示方式（NotesWindowModel.Layout 的 rawValue：wall 便签墙 / list 列表；没存过 = 便签墙，
   /// 2026-10-15 手测反馈）。同窗口位置一样是这台电脑自己的状态、**不注册默认值**：不跟着导出 / 导入走
   nonisolated static let notesWindowLayout = "notesWindowLayout"
+  /// 全部便签窗口「全部」的排法（NotesWindowModel.Sort：manual 手动顺序 / modified 最近修改，第四轮体检 X19；没存过 = 手动）。
+  /// 同显示方式，这台电脑自己的状态、不注册默认值
+  nonisolated static let notesWindowSort = "notesWindowSort"
 
   /// 功能开关（2026-10-21，Shell/Feature.swift）：九个功能各一个键「feature.<Feature.rawValue>」（Feature.prefsKey 拼），
   /// 注册的默认值是 Feature.defaultOn（程序坞预览关、别的开；跟着导出 / 导入的「设置」一类走）。读用 Feature.isOn
@@ -374,6 +416,32 @@ enum Prefs {
   /// 程序坞预览：按 ⌘Tab 切换时也在切换器上方弹窗口预览（2026-11-06 拍板 C2，默认开；程序坞预览关着时不生效）
   nonisolated static let dockPreviewCmdTab = "dockPreviewCmdTab"
 
+  /// 睡眠关蓝牙（插件，2026-11-17）：只在合上盖子时关（默认开；关掉 = 每次睡眠都关）、醒来时重新打开睡前关掉的（默认开）。
+  /// 跟着导出、同步
+  nonisolated static let bluetoothSnoozeLidOnly = "bluetoothSnoozeLidOnly"
+  nonisolated static let bluetoothSnoozeReopen = "bluetoothSnoozeReopen"
+  /// 睡眠关蓝牙：蓝牙是我们睡前关掉的、还没打开（醒来、启动时据此打开）；上次关掉、打开的时刻（秒，设置页那一行）。
+  /// 这台电脑自己的状态，**不注册默认值**
+  nonisolated static let bluetoothSnoozeHeld = "bluetoothSnoozeHeld"
+  nonisolated static let bluetoothSnoozeOffAt = "bluetoothSnoozeOffAt"
+  nonisolated static let bluetoothSnoozeOnAt = "bluetoothSnoozeOnAt"
+
+  /// 平滑滚动（插件，2026-11-17，SmoothScroll/）：平滑程度 0…100（默认 50）、滚动距离（百分比 50…300，默认 100）、
+  /// 鼠标上下 / 左右反向（默认关；跟着这台 Mac 接的鼠标，不同步，SettingsSync.localKeys）、停用的 App（bundle id 的数组，
+  /// 默认空；虚拟机、远程桌面、游戏不用放进来，自动照原样）
+  nonisolated static let smoothScrollStrength = "smoothScrollStrength"
+  nonisolated static let smoothScrollSpeed = "smoothScrollSpeed"
+  nonisolated static let smoothScrollReverseVertical = "smoothScrollReverseVertical"
+  nonisolated static let smoothScrollReverseHorizontal = "smoothScrollReverseHorizontal"
+  nonisolated static let smoothScrollExcluded = "smoothScrollExcluded"
+  /// App 快捷键（插件，2026-11-17）：按住 ⌘ 叫出来（默认开）、按住多久（毫秒，AppShortcuts.delayChoices，默认 1000；
+  /// 读它走 AppShortcuts.delay，认不出的按 1 秒）。跟着导出、同步
+  nonisolated static let appShortcutsHold = "appShortcutsHold"
+  nonisolated static let appShortcutsDelay = "appShortcutsDelay"
+  /// App 快捷键：按住哪个修饰键（ModifierTaps.Key 的 rawValue：command / option / control / shift，默认 command；2026-11-18
+  /// 用户要能换）。读它走 AppShortcuts.holdKey，认不出的按 ⌘。跟着导出、同步
+  nonisolated static let appShortcutsHoldKey = "appShortcutsHoldKey"
+
   /// 访达右键（第十一族，2026-11-08，FinderLink）：扩展把动作交过来时带的凭证（App 第一次启动时生成，FinderLink.ensureKey；
   /// 扩展从 App 的偏好里读）。这台电脑自己的、**不注册默认值**：不跟着导出 / 导入、同步走
   nonisolated static let finderMenuKey = "finderMenuKey"
@@ -387,6 +455,9 @@ enum Prefs {
   /// 访达右键压缩时另外跳过的名字（设置 › 访达右键「压缩时跳过」，2026-11-13 拍板 Z1）：逗号隔开，* ? 通配，只认名字不认路径，
   /// 默认空 = 和原来一样（Mac 杂文件照旧总跳过）。只有 App 读，扩展不读；注册了默认值，跟着导出、同步（Z4）
   nonisolated static let finderCompressSkip = "finderCompressSkip"
+  /// 访达右键「解压到这里」解成功后把压缩包移到废纸篓（设置 › 访达右键「压缩和解压」，2026-11-17 拍板 B2，默认关；同系统归档实用工具的
+  /// 「展开后：将归档移到废纸篓」）。只有 App 读；注册了默认值，跟着导出、同步
+  nonisolated static let finderTrashAfterExtract = "finderTrashAfterExtract"
   /// 访达右键里每一项显示不显示：键是「finderMenu<名字>」，见 FinderMenu/FinderMenuItem（默认值按项，下面 defaults 里一起注册）。
   /// 访达右键「移动到」「复制到」的常用文件夹（~ 开头的写法；设置 › 访达右键，没存过是桌面、文稿、下载）。这台电脑自己的、
   /// **不注册默认值**（同截图的存储文件夹：别人给的设置文件不该能往右键菜单里加一个文件夹）。扩展读同一个键（键名和默认值
@@ -412,6 +483,11 @@ enum Prefs {
   /// 欢迎引导做到了第几屏（OnboardingView.Screen 的 rawValue）：没走完就退出、下次接着开时从哪一屏起（E1）；走完删掉。
   /// 这台电脑自己的状态，不注册默认值
   nonisolated static let onboardingScreen = "onboardingScreen"
+  /// 本 App 自己的界面语言（系统的键名，值是 ["en"] 这样的列表；InterfaceLanguage）：没有 = 跟随系统。系统设置 › 通用 ›
+  /// 语言与地区 › 应用程序 里选的也写在这里。这台电脑自己的，不注册默认值（不导出、不同步）；只在启动时读一次
+  nonisolated static let appleLanguages = "AppleLanguages"
+  /// 带英文界面的版本第一次打开过了（InterfaceLanguage.keepChineseOnUpgrade 只在这之前做一次）。这台电脑自己的，不注册默认值
+  nonisolated static let languageIntroduced = "languageIntroduced"
   /// 「去授权」请求过辅助功能 / 屏幕录制的系统授权框没有（第四轮体检 U10：系统只弹一次，请求过了再点就直接打开系统设置那一页，
   /// 不再两个窗一起出来）。这台电脑自己的状态，不注册默认值
   static let accessibilityRequested = "accessibilityRequested"
@@ -420,9 +496,14 @@ enum Prefs {
   static let updateAutoCheck = "updateAutoCheck"
   /// 已经用刘海岛提示过的新版本号（后台检查每个版本只提示一次）
   static let updateNotifiedVersion = "updateNotifiedVersion"
+  /// 「跳过这个版本」跳过的版本号（第四轮体检 X11）：菜单栏的角标、菜单和面板底栏的「更新到 x」、后台检查的岛都不再提它，
+  /// 更新的版本出来照常提。这台电脑自己的状态，不注册默认值
+  static let updateSkippedVersion = "updateSkippedVersion"
+  /// 发现新版本就在后台下载好，退出时装上（X11，默认开）
+  static let updateInstallOnQuit = "updateInstallOnQuit"
   /// 设置窗上次看的页（SettingsPage.rawValue）
   static let settingsPage = "settingsPage"
-  /// 设置侧栏收起了哪几组（组标题，换行隔开；SettingsRoot）。这台电脑自己的界面状态：不注册默认值、不导出不同步
+  /// 设置侧栏收起了哪几组（SettingsPage.SidebarSection 的 rawValue，换行隔开；0.9.0 及以前存的是中文组标题，读时照样认；SettingsRoot）。这台电脑自己的界面状态：不注册默认值、不导出不同步
   static let settingsCollapsedGroups = "settingsCollapsedGroups"
   /// 设置侧栏底下「已关闭」那组展开着没有（默认收起；SettingsRoot）。这台电脑自己的界面状态：不注册默认值、不导出不同步
   static let settingsShowsOffFeatures = "settingsShowsOffFeatures"
@@ -444,6 +525,35 @@ enum Prefs {
   static let islandNoticeBattery = "islandNoticeBattery"
   static let islandNoticeHeadphones = "islandNoticeHeadphones"
   static let islandNoticeNetwork = "islandNoticeNetwork"
+  /// 低电量模式打开 / 关掉时提示（2026-11-17 照 Alcove，「系统提示」一节，默认关）
+  static let islandNoticeLowPower = "islandNoticeLowPower"
+  /// 整点响一声、日程开始时响一声（2026-11-17 照 Alcove，「日程」一节，默认关；Shell/Chime.swift）
+  static let islandHourlyChime = "islandHourlyChime"
+  static let islandEventChime = "islandEventChime"
+  /// 截图、录屏里不出现刘海岛（2026-11-17 照 Alcove，默认关）
+  static let islandHidesFromCapture = "islandHidesFromCapture"
+  /// 2026-11-17 第 4 批（照 Alcove 能调，默认同原来）：提示停多久（Island.DwellLength 的 rawValue）、停在刘海上多久展开（秒）、
+  /// 音量 / 亮度那一行停多久（秒）、细条用强调色、细条旁写百分比、正在用放歌的 App 时刘海两边不显示正在播放
+  static let islandNoticeLength = "islandNoticeLength"
+  static let islandHoverDelay = "islandHoverDelay"
+  static let islandLevelStay = "islandLevelStay"
+  static let islandLevelAccent = "islandLevelAccent"
+  static let islandLevelPercent = "islandLevelPercent"
+  static let islandNowPlayingHidesWhenActive = "islandNowPlayingHidesWhenActive"
+  /// 2026-11-17 第 5 批，日历（照 Alcove，默认关）：日程用它所在日历的颜色、拒绝 / 取消的也列、月历上标出有日程的日子
+  static let islandCalendarColors = "islandCalendarColors"
+  static let islandShowDeclined = "islandShowDeclined"
+  static let islandCalendarDots = "islandCalendarDots"
+  /// 不看的日历（EKCalendar.calendarIdentifier，一行一个；设置 › 刘海岛「选择日历」）。编号只在这台 Mac 上有意义：
+  /// **不注册默认值**——不导出、不同步
+  static let islandHiddenCalendars = "islandHiddenCalendars"
+  /// 刘海屏上的岛描一圈细边（2026-11-17 第 7 批，照 Alcove 的对比描边，默认关）
+  static let islandOutlined = "islandOutlined"
+  /// 2026-11-18 最后一批（照 Alcove，默认关 / 同原来）：前台 App 全屏时藏起刘海岛、正在播放的颜色（Island.MediaColor 的
+  /// rawValue：封面的颜色 / 强调色 / 白色）、播放卡片上「音乐」的收藏按钮（默认开，只在放「音乐」时出）
+  static let islandHidesInFullScreen = "islandHidesInFullScreen"
+  static let islandMediaColor = "islandMediaColor"
+  static let islandMusicFavorite = "islandMusicFavorite"
   /// 刘海岛上的「正在播放」（刘海岛扩展第 2 期，Shell/NowPlaying.swift）：默认关（2026-11-13 拍板：归刘海岛插件、一组开关）；
   /// 关着时不连正在播放服务、服务不起
   static let islandNowPlaying = "islandNowPlaying"
@@ -460,6 +570,15 @@ enum Prefs {
   static let islandHaptics = "islandHaptics"
   /// 岛展开成卡片 / 那一张时四周渐进模糊（默认开；2026-11-14，Shell/IslandBackdrop.swift）
   static let islandBlur = "islandBlur"
+  /// 系统专注模式开、关、换模式时在刘海两边提示一下（默认开；2026-11-17 拍板 B1，Shell/SystemFocus.swift）
+  static let islandFocus = "islandFocus"
+  /// 专注模式那一节的另外三样（2026-11-17，照 Alcove，都默认关）：睡眠模式打开时响一声、正在播放的右耳跳动条换成专注模式的图标、
+  /// 专注模式开着时不弹电源 / 电量 / 耳机 / 网络的提示
+  static let islandFocusSleepSound = "islandFocusSleepSound"
+  static let islandFocusWaveform = "islandFocusWaveform"
+  static let islandFocusQuiet = "islandFocusQuiet"
+  /// 开着专注模式时一直挂在刘海两边（2026-11-18 用户「alcove 好像是一直展示的」，默认开）
+  static let islandFocusPinned = "islandFocusPinned"
   /// 新功能标记（Shell/WhatsNew.swift，2026-11-05）的账：各版本在这台 Mac 上第一次打开的时刻（版本号 → Date，从这一刻起挂 30 天）、
   /// 碰过哪几个（WhatsNew.Entry.id 的数组）。这台电脑自己的状态：不注册默认值、不导出不同步
   static let whatsNewStarted = "whatsNewStarted"
@@ -496,6 +615,7 @@ enum Prefs {
       launcherShowsFrequent: true,
       launcherRomanInput: false,
       launcherScripts: true,
+      launcherShortcuts: true,
       launcherCommandAliases: "",
       launcherAppAliases: "",
       launcherCommandsOff: "",
@@ -509,10 +629,21 @@ enum Prefs {
       launchpadCorner: LaunchpadCornerOption.off.rawValue,
       dockPreviewDelay: 400,
       dockPreviewCmdTab: true,
+      bluetoothSnoozeLidOnly: true,
+      bluetoothSnoozeReopen: true,
+      smoothScrollStrength: 50,
+      smoothScrollSpeed: 100,
+      smoothScrollReverseVertical: false,
+      smoothScrollReverseHorizontal: false,
+      smoothScrollExcluded: [String](),
+      appShortcutsHold: true,
+      appShortcutsDelay: 1000,
+      appShortcutsHoldKey: ModifierTaps.Key.command.rawValue,
       finderOpenWithApps: finderOpenWithDefault,
       panelSqueezeEntrance: false,
       floatingPinned: false,
       updateAutoCheck: true,
+      updateInstallOnQuit: true,
       clipboardRetentionDays: 7,
       clipboardImageBudgetMB: 512,
       clipboardExcludedBundleIDs: ClipboardFilter.defaultExcluded,
@@ -544,12 +675,18 @@ enum Prefs {
       translateCollapsedServices: "",
       ocrJoinLines: false,
       screenshotShutterSound: true,
+      screenshotCursor: false,
+      captureHideDesktopIcons: false,
       screenshotPlacement: ShotPlacement.corner.rawValue,
       screenshotToolbarAlign: "right",
       screenshotCopyAs: "image",
       scrollCaptureSpeed: ScrollSpeed.normal.rawValue,
       screenshotKeepsColors: false,
+      screenshotShowsHint: true,
+      pinSelectsText: true,
+      screenshotLoupe: Loupe.full.rawValue,
       screenshotFindsElements: false,
+      screenshotFindsWebElements: false,
       shotHistory: true,
       shotHistoryDays: 30,
       shotHistoryMegabytes: 2 * 1024,
@@ -569,6 +706,7 @@ enum Prefs {
       statusScreenHotKeyEntersFirst: false,
       statusScreenAnimations: true,
       remindersSnoozeMinutes: 5,
+      remindersDuringFocus: ReminderFocusStyle.light.rawValue,
       emojiPackDownloads: true,
       notesFontSize: 15,
       notesMarkdown: true,
@@ -587,6 +725,7 @@ enum Prefs {
       notesDeckNoteSize: NoteDeckOptions.NoteSize.medium.rawValue,
       finderMenuGrouped: false,
       finderCompressSkip: "",
+      finderTrashAfterExtract: false,
       islandActionOrder: "",
       islandActionsOff: "",
       islandShowsHistory: false,
@@ -596,12 +735,36 @@ enum Prefs {
       islandNoticeBattery: false,
       islandNoticeHeadphones: false,
       islandNoticeNetwork: false,
+      islandNoticeLowPower: false,
+      islandHourlyChime: false,
+      islandEventChime: false,
+      islandHidesFromCapture: false,
+      islandNoticeLength: Island.DwellLength.standard.rawValue,
+      islandHoverDelay: 0.3,
+      islandLevelStay: 2.2,
+      islandLevelAccent: false,
+      islandLevelPercent: false,
+      islandNowPlayingHidesWhenActive: false,
+      islandCalendarColors: false,
+      islandShowDeclined: false,
+      islandCalendarDots: false,
+      islandOutlined: false,
+      islandHidesInFullScreen: false,
+      islandMediaColor: Island.MediaColor.artwork.rawValue,
+      islandMusicFavorite: true,
       islandNowPlaying: false,
       islandTrackPeek: true,
       // 默认关（2026-11-14，用户：Alcove 是点了才展开；它的实录里指针停 2–5 秒都只是鼓起）。这一项没发布过
       islandHoverExpands: false,
       islandHaptics: true,
       islandBlur: true,
+      islandFocus: true,
+      islandFocusSleepSound: false,
+      islandFocusWaveform: false,
+      islandFocusQuiet: false,
+      islandFocusPinned: true,
+      keepAwakeDisplay: true,
+      keepAwakeSchedule: "",
     ].merging(Feature.allCases.map { ($0.prefsKey, $0.defaultOn as Any) }) { current, _ in current }
       .merging(FinderMenuItem.allCases.map { ($0.prefsKey, $0.defaultOn as Any) }) { current, _ in
         current
@@ -625,9 +788,9 @@ enum Prefs {
 
     var title: String {
       switch self {
-      case .corner: "角落的缩略图"
-      case .clothesline: "挂到晾衣绳上"
-      case .none: "都不要"
+      case .corner: String(localized: "角落的缩略图")
+      case .clothesline: String(localized: "挂到晾衣绳上")
+      case .none: String(localized: "都不要")
       }
     }
 
@@ -638,15 +801,38 @@ enum Prefs {
     }
   }
 
+  /// 框选时的放大镜（screenshotLoupe）：格子和下面那张色值卡（色块 + HEX + 坐标 +「C」）分开开关。色值不显示时 C 不取色
+  /// （看不见要拷的是什么，误按一下这次截图就结束了），标注托盘的吸管照常：点了吸管放大镜和色值照常出来
+  enum Loupe: String, CaseIterable {
+    case full, loupe, off
+
+    var title: String {
+      switch self {
+      case .full: String(localized: "放大镜和色值")
+      case .loupe: String(localized: "只显示放大镜")
+      case .off:
+        String(
+          localized: "shot.loupe.off", defaultValue: "不显示", comment: "设置 › 截图「框选时的放大镜」的一项：不显示放大镜")
+      }
+    }
+
+    /// 偏好里存的（认不出来按默认的放大镜和色值）
+    static func current(_ defaults: UserDefaults = .standard) -> Loupe {
+      defaults.string(forKey: Prefs.screenshotLoupe).flatMap(Loupe.init(rawValue:)) ?? .full
+    }
+  }
+
   /// 长截图自动滚动的速度（scrollCaptureSpeed）：每秒想滚出几个选区高，实际发多少滚轮由 ScrollCapture 按量出来的位移校准
   enum ScrollSpeed: String, CaseIterable {
     case slow, normal, fast
 
     var title: String {
       switch self {
-      case .slow: "慢"
-      case .normal: "标准"
-      case .fast: "快"
+      case .slow: String(localized: "慢")
+      // 录屏清晰度也有个「标准」（Standard）：这里是速度的中间档（Normal），显式 key
+      case .normal:
+        String(localized: "shot.scrollSpeed.normal", defaultValue: "标准", comment: "长截图自动滚动的速度：中间那档")
+      case .fast: String(localized: "快")
       }
     }
 

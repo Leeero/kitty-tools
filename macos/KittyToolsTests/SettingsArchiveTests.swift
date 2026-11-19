@@ -724,6 +724,29 @@ struct SettingsArchiveTests {
     #expect(try archive(json: file(#""hotkeys": {}"#)).privacyLosses(comparedTo: target) == [])
   }
 
+  /// 导入「设置」会添加的插件（插件页改版 F1）：文件里添加着、本机没添加的；文件里没写的按默认值算
+  @Test func listsAddedPlugins() throws {
+    let (target, name) = try suite()
+    defer { target.removePersistentDomain(forName: name) }
+    func added(_ preferences: String) throws -> [Feature] {
+      try archive(json: file(#""preferences": {\#(preferences)}"#)).addedPlugins(comparedTo: target)
+    }
+    func plugins(on: Set<Feature>) -> String {
+      Feature.plugins.map { #""\#($0.prefsKey)": \#(on.contains($0))"# }.joined(separator: ", ")
+    }
+    for plugin in Feature.plugins { target.set(false, forKey: plugin.prefsKey) }
+    #expect(try added(plugins(on: [])) == [])
+    // 按 Feature 的先后
+    #expect(try added(plugins(on: [.dockPreview, .notes])) == [.notes, .dockPreview])
+    // 没写的按默认值：便签这类默认添加着，程序坞预览默认不添加
+    #expect(try added("").contains(.notes) && !added("").contains(.dockPreview))
+    // 本机已经添加着的不算
+    target.set(true, forKey: Feature.notes.prefsKey)
+    #expect(try added(plugins(on: [.notes])) == [])
+    // 不带「设置」这一类的文件不提醒
+    #expect(try archive(json: file(#""hotkeys": {}"#)).addedPlugins(comparedTo: target) == [])
+  }
+
   /// 功能开关（Feature）：导入会让剪贴板从关变开（又开始记）、让复制即译实际跑起来（翻译从关变开、复制即译开着）时提醒；
   /// 文件里没有这个键 = 默认开
   @Test func listsFeatureSwitchLosses() throws {
@@ -1558,7 +1581,8 @@ struct SettingsArchiveTests {
     #expect(!archive.notesFit)
     #expect(
       archive.exportProblem(encodedSize: 100)
-        == "便签超过 \(SettingsArchive.maxNotes) 条，先取消勾选「便签」")
+        // 条数是数量，插进句子时按语言加千分位（多语言第 7 批：「5,000 条」）
+        == "便签超过 \(SettingsArchive.maxNotes.formatted()) 条，先取消勾选「便签」")
     archive.notes = [note(1, body: String(repeating: "x", count: Note.maxBodyBytes))]
     #expect(archive.notesFit && archive.exportProblem(encodedSize: 100) == nil)
     archive.notes = [

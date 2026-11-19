@@ -70,6 +70,18 @@ struct ScreenshotSnapshotTests {
     try shoot(
       h.window, "idle-window-original-colors", crop: CGRect(x: 100, y: 340, width: 620, height: 460)
     )
+    // 设置 › 截图「框选时的放大镜」（2026-11-17）：只显示放大镜（没有色值卡）、不显示（按住 ⌘ 的十字准线照样有）；
+    // 「框选时显示操作提示」关着时顶上没有那条
+    h = Harness(windows: Self.windows, image: desktop, loupe: .loupe)
+    h.move(CGPoint(x: 330, y: 520))
+    try shoot(
+      h.window, "idle-window-loupe-only", crop: CGRect(x: 100, y: 340, width: 620, height: 460))
+    h = Harness(windows: Self.windows, image: desktop, showsHint: false, loupe: .off)
+    h.move(CGPoint(x: 330, y: 520))
+    h.modifiers(.command)
+    try shoot(
+      h.window, "idle-window-no-loupe-no-hint",
+      crop: CGRect(x: 0, y: 340, width: 1200, height: 460))
     h = Harness(windows: Self.windows, image: desktop, keepsColors: true)
     h.drag(CGPoint(x: 300.3, y: 260.7), CGPoint(x: 800.4, y: 560.2))
     try shoot(
@@ -251,7 +263,7 @@ struct ScreenshotSnapshotTests {
     let fontBar = try #require(h.view.subviews.lazy.compactMap { $0 as? StyleBar }.first)
     let sizeButton = try #require(
       Self.descendants(of: fontBar).compactMap { $0 as? NSButton }.first {
-        $0.accessibilityLabel() == "字号"
+        $0.accessibilityLabel() == String(localized: "字号")  // 英文截图里是 Font size
       })
     sizeButton.sendAction(sizeButton.action, to: sizeButton.target)
     try shoot(
@@ -1130,6 +1142,37 @@ struct ScreenshotSnapshotTests {
     try write(try #require(image.cropping(to: pixels)), to: "\(stem)-crop.png")
   }
 
+  /// 钉图上选字（2026-11-17）：认出字、⌘A 全选之后的样子（选区高亮是系统的选字层画的）
+  @Test(.enabled(if: directory != nil)) func renderPinTextSelection() async throws {
+    let out = try #require(Self.directory)
+    Prefs.registerDefaults()  // 「钉图上的字可以直接选」的默认值（只写注册域）
+    let board = PinBoard()
+    board.pin(PinTextTests.image, frame: CGRect(x: -20000, y: -20000, width: 700, height: 200))
+    defer { board.closeAll() }
+    let panel = try #require(board.panels.first)
+    panel.finishPopIn()
+    panel.orderFront(nil)
+    await panel.prepareText()
+    let pin = try #require(panel.contentView)
+    pin.keyDown(
+      with: try #require(
+        NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: 0,
+          context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false,
+          keyCode: UInt16(kVK_ANSI_A))))
+    try await Task.sleep(for: .milliseconds(300))  // 选区高亮画上
+    let size = pin.bounds.size
+    let bitmap = try #require(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap)).cgContext
+    context.scaleBy(x: 2, y: 2)
+    try #require(pin.layer).render(in: context)
+    try write(try #require(bitmap.cgImage), to: "\(out)/shot-pin-text-selected.png")
+  }
+
   // 钉图的透明度滑块（2026-10-03）：右键「透明度 ▸」、悬停圆钮弹出的那一行（60%、最低 10%，浅 / 深色），垫在菜单材质上看对齐
   @Test(.enabled(if: directory != nil)) func renderPinOpacity() throws {
     let out = try #require(Self.directory)
@@ -1147,7 +1190,7 @@ struct ScreenshotSnapshotTests {
     for (percent, dark) in [(60, false), (60, true), (10, false)] {
       panel.opacity = CGFloat(percent) / 100
       let row = try #require(
-        pin.menu(for: event)?.items.first { $0.title == "透明度" }?.submenu?.items.first?.view)
+        pin.menu(for: event)?.items.first { $0.title == String(localized: "透明度") }?.submenu?.items.first?.view)
       // 菜单上下各有约 5 pt 的内边距
       let size = NSSize(width: row.frame.width, height: row.frame.height + 10)
       let window = NSWindow(

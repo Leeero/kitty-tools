@@ -41,11 +41,12 @@ struct ScriptsSection: View {
 
     /// 存好之后岛上那一句：接下来怎么用（读不成的、模板不会列在启动器里）
     var nextStep: String {
-      if isTemplate { return "填好里面要填的值、把名字里的 .template. 去掉，才会列在启动器里" }
+      if isTemplate { return String(localized: "填好里面要填的值、把名字里的 .template. 去掉，才会列在启动器里") }
       switch parsed {
       case .success(let script)?:
-        return script.keyword.map { "在启动器里输 \($0) 试试" } ?? "在启动器里按名字找它"
-      case .failure(let problem)?: return "现在还跑不了：\(problem.text)；改好就能用"
+        return script.keyword.map { String(localized: "在启动器里输 \($0) 试试") }
+          ?? String(localized: "在启动器里按名字找它")
+      case .failure(let problem)?: return String(localized: "现在还跑不了：\(problem.text)；改好就能用")
       case nil: return ""
       }
     }
@@ -135,7 +136,8 @@ struct ScriptsSection: View {
       NewTitle("脚本命令", page: .launcher, fresh: navigation?.fresh ?? [])
     } footer: {
       SectionFootnote(
-        "脚本以你的身份运行，能用 Kitty Tools 已有的辅助功能、屏幕录制等授权，只放你信得过的脚本；从网上下载的，第一次运行前会先给你看一眼全文。")
+        "脚本以你的身份运行，能用 Kitty Tools 已有的辅助功能、屏幕录制等授权，只放你信得过的脚本；从网上下载的，第一次运行前会先给你看一眼全文。Kitty Tools 自带的大功能（便签、刘海岛这些）是插件，在 设置 › 全部插件 里添加。"
+      )
     }
     .sheet(item: $pending) { candidate in
       ScriptImportSheet(candidate: candidate) {
@@ -148,11 +150,11 @@ struct ScriptsSection: View {
         }
         library?.refresh()
         island?.show(
-          "已存成「\(url.lastPathComponent)」", detail: candidate.nextStep, actions: [.reveal(url)])
+          "已存成「\(url.lastPathComponent)」", detail: "\(candidate.nextStep)", actions: [.reveal(url)])
       }
     }
     Section {
-      SettingsPushRow(title: "命令和别名", detail: commandsSummary) {
+      SettingsPushRow(title: "命令和别名", detail: "\(commandsSummary)") {
         navigation?.path = [LauncherCommandsPage.route]
       }
     } header: {
@@ -174,12 +176,15 @@ struct ScriptsSection: View {
       rows.filter { $0.group == group }.count
     }
     var parts: [String] = []
-    if count(.mine) > 0 { parts.append("\(count(.mine)) 个我的脚本") }
-    if count(.bundled) > 0 { parts.append("\(count(.bundled)) 个自带脚本") }
-    parts += ["\(count(.keyword)) 个关键词命令", "\(count(.system)) 个系统命令"]
+    if count(.mine) > 0 { parts.append(String(localized: "\(count(.mine)) 个我的脚本")) }
+    if count(.bundled) > 0 { parts.append(String(localized: "\(count(.bundled)) 个自带脚本")) }
+    parts += [
+      String(localized: "\(count(.keyword)) 个关键词命令"), String(localized: "\(count(.system)) 个系统命令"),
+    ]
     let off = LauncherCommands.Settings(aliasesText: "", offText: offText).off
     let closed = rows.filter { off.contains($0.id) }.count
-    return parts.joined(separator: "、") + (closed > 0 ? "，关了 \(closed) 个" : "")
+    let summary = parts.joinedAsList()
+    return closed > 0 ? String(localized: "\(summary)，关了 \(closed) 个") : summary
   }
 
   /// 「复制写法说明」：给 AI 的那一份（ScriptAIGuide）
@@ -248,7 +253,8 @@ struct ScriptsSection: View {
       let read = await ScriptRunner.read(url.path(percentEncoded: false))
       // 点开头的是隐藏文件、存进去不会列出来：存的时候去掉开头的点
       let name = String(url.lastPathComponent.drop { $0 == "." })
-      pending = Candidate(url: url, name: name.isEmpty ? "导入的脚本.sh" : name, reading: read)
+      pending = Candidate(
+        url: url, name: name.isEmpty ? String(localized: "导入的脚本.sh") : name, reading: read)
     }
   }
 
@@ -258,8 +264,8 @@ struct ScriptsSection: View {
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
     panel.allowsMultipleSelection = false
-    panel.prompt = "导入"
-    panel.message = "选一个别人给的脚本文件，导入前先看一眼全文"
+    panel.prompt = String(localized: "导入")
+    panel.message = String(localized: "选一个别人给的脚本文件，导入前先看一眼全文")
     let done: (NSApplication.ModalResponse) -> Void = { response in
       guard response == .OK, let url = panel.url else { return }
       review(url)
@@ -277,8 +283,8 @@ struct ScriptsSection: View {
     panel.canChooseFiles = false
     panel.canChooseDirectories = true
     panel.allowsMultipleSelection = false
-    panel.prompt = "添加"
-    panel.message = "选一个放脚本的文件夹（只读，不往里写）"
+    panel.prompt = String(localized: "添加")
+    panel.message = String(localized: "选一个放脚本的文件夹（只读，不往里写）")
     let done: (NSApplication.ModalResponse) -> Void = { response in
       guard response == .OK, let url = panel.url else { return }
       ScriptLibrary.addFolder(url)
@@ -294,8 +300,9 @@ struct ScriptsSection: View {
 
 /// 设置里推进一页的那种行：标题 + 一行小字 + 右边 ›（整行能点）
 struct SettingsPushRow: View {
-  let title: String
-  let detail: String
+  /// 别处算好的字（一句摘要）传 "\(x)"（TRANSLATION.md 二）
+  let title: LocalizedStringResource
+  let detail: LocalizedStringResource
   /// 名字后面挂「新」（WhatsNew）
   var isNew = false
   let action: () -> Void
@@ -309,15 +316,15 @@ struct SettingsPushRow: View {
           .accessibilityHidden(true)
       } label: {
         HStack(spacing: 6) {
-          Text(title)
+          Text(plain: title)
           if isNew { NewTag() }
         }
-        Text(detail)
+        Text(plain: detail)
       }
       .contentShape(.rect)
     }
     .buttonStyle(.plain)
-    .accessibilityHint("打开「\(title)」")
+    .accessibilityHint("打开「\(String(localized: title))」")
   }
 }
 
@@ -335,9 +342,11 @@ private struct ScriptImportSheet: View {
         .font(.headline)
       switch script {
       case .success(let script)?:
-        Text(
-          "启动器里叫「\(script.title)」"
-            + (script.keyword.map { "，关键词「\($0)」" } ?? "") + "。")
+        if let keyword = script.keyword {
+          Text("启动器里叫「\(script.title)」，关键词「\(keyword)」。")
+        } else {
+          Text("启动器里叫「\(script.title)」。")
+        }
       case .failure(let problem)?:
         Text("这个文件现在还跑不了：\(problem.text)。导入后会列在「读不成的脚本」里，改好就能用。")
           .foregroundStyle(Color(nsColor: .systemOrange))
@@ -354,12 +363,12 @@ private struct ScriptImportSheet: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
       if let problem = reading.problem {
-        Text(problem + "不能导入。")
+        Text("\(problem)不能导入。")
           .foregroundStyle(Color(nsColor: .systemOrange))
           .fixedSize(horizontal: false, vertical: true)
       }
       ScrollView {
-        Text(reading.text.isEmpty ? "（空的）" : reading.text)
+        (reading.text.isEmpty ? Text("（空的）") : Text(verbatim: reading.text))
           .font(.system(size: 12, design: .monospaced))
           .lineSpacing(2)
           .textSelection(.enabled)

@@ -21,8 +21,8 @@ enum FlyCard {
     /// 结果的一句话（旁白；减弱动态效果时不飞，刘海岛说这句）
     var title: String {
       switch self {
-      case .copied: "已复制截图"
-      case .saved: "已保存到「\(folder ?? "")」"
+      case .copied: String(localized: "已复制截图")
+      case .saved: String(localized: "已保存到「\(folder ?? "")」")
       }
     }
 
@@ -45,7 +45,7 @@ enum FlyCard {
     /// announces：卡片不接鼠标，主动给 VoiceOver 播报结果；录屏自己说（带时长）或由岛说时传 false
     func land(_ badge: Badge, announces: Bool = true) {
       self.badge = badge
-      if announces { Island.announce(badge.title) }
+      if announces { Island.announce("\(badge.title)") }
     }
   }
 

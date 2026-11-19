@@ -1,7 +1,9 @@
 // 设置 › 截图：⌘S 快速保存的位置（文件夹图标 + 访达里的名字，选过的能恢复默认，体检 A28；录屏、录音也存这里，
 // 「录制」页的「保存到」是同一行 SaveDirectoryRow）、截图拷贝为图像还是 PNG 文件（2026-11-06）、快门声（可试听）、截图后留不留常驻缩略图（体检 D18）、
+// 框选时显示操作提示、框选时的放大镜（2026-11-17：放大镜和色值 / 只显示放大镜 / 不显示）、钉图上的字可以直接选（2026-11-17）、
+// 截图带上鼠标指针、截图录屏时隐藏桌面图标（第四轮体检 X8 X9，默认都关）、
 // 框选后工具栏靠右还是居中（2026-11-05，录屏的录制条同一个设置）、框选时保持屏幕原色（2026-11-06，不压暗不染色）、
-// 悬停时识别窗口里的元素（2026-11-08，要辅助功能授权：没授权时开关下面出授权那一行）、识字是否把同一段里的换行接起来（开关旁边实时对照效果，
+// 悬停时识别窗口里的元素（2026-11-08，要辅助功能授权：没授权时开关下面出授权那一行；2026-11-15 加子开关「也认网页里的元素」）、识字是否把同一段里的换行接起来（开关旁边实时对照效果，
 // 体检 A32）。截图历史改短保留期 / 改小占用会删掉东西时先问
 // （第四轮体检 E24，同剪贴板 E4），改了当场清一次。录屏、录音的设置在「录制」页（RecordTab，2026-10-03 拆出去）。
 // 框选、标注、长截图、录屏的按键不写进页里（N11）：一句话 +「查看全部快捷键…」打开速查表；全局快捷键和截图时能改的键
@@ -17,12 +19,18 @@ struct ScreenshotTab: View {
   var openHistory: () -> Void = {}
   @AppStorage(Prefs.ocrJoinLines) private var joinLines = false
   @AppStorage(Prefs.screenshotShutterSound) private var shutterSound = true
+  @AppStorage(Prefs.screenshotCursor) private var cursor = false
+  @AppStorage(Prefs.captureHideDesktopIcons) private var hidesDesktopIcons = false
   @AppStorage(Prefs.screenshotPlacement) private var placement = Prefs.ShotPlacement.corner
     .rawValue
   @AppStorage(Prefs.screenshotToolbarAlign) private var toolbarAlign = "right"
   @AppStorage(Prefs.screenshotCopyAs) private var copyAs = "image"
   @AppStorage(Prefs.screenshotKeepsColors) private var keepsColors = false
+  @AppStorage(Prefs.screenshotShowsHint) private var showsHint = true
+  @AppStorage(Prefs.pinSelectsText) private var pinSelectsText = true
+  @AppStorage(Prefs.screenshotLoupe) private var loupe = Prefs.Loupe.full.rawValue
   @AppStorage(Prefs.screenshotFindsElements) private var findsElements = false
+  @AppStorage(Prefs.screenshotFindsWebElements) private var findsWebElements = false
   /// 认元素要辅助功能授权（拍板 D2：没授权只在这里说，不弹框）；从系统设置授权回来、设置窗重新当 key 时刷新
   @State private var trusted = Permissions.isAccessibilityTrusted
   /// 「截图拷贝为」「框选时保持屏幕原色」那两行的「新」（0.7.3，WhatsNew）
@@ -75,6 +83,14 @@ struct ScreenshotTab: View {
           SectionFootnote("拷贝、存储、钉图时响；还要 系统设置 › 声音 里的「播放用户界面音效」开着。截图翻译、识字不出声。")
         }
         Section {
+          Toggle("截图带上鼠标指针", isOn: $cursor)
+          Toggle("截图、录屏时隐藏桌面图标", isOn: $hidesDesktopIcons)
+        } footer: {
+          SectionFootnote(
+            "带上的是按快捷键那一刻的指针；识字、截图翻译不带。隐藏桌面图标：桌面上的文件不进截图和录屏，桌面本身照常；录屏中访达新弹出的菜单、窗口最多晚 1 秒才录进去。"
+          )
+        }
+        Section {
           Toggle("保留截图历史", isOn: $keepsHistory)
           if keepsHistory {
             Picker("保留", selection: limited(days: true)) {
@@ -100,6 +116,16 @@ struct ScreenshotTab: View {
           )
         }
         Section {
+          Toggle(isOn: $showsHint) {
+            Text("框选时显示操作提示")
+            Text("刚开始框选时屏幕上方那一行：拖动框选、单击选中、双击直接拷贝这些，3 秒后自己淡出")
+          }
+          Picker(selection: $loupe) {
+            ForEach(Prefs.Loupe.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
+          } label: {
+            Text("框选时的放大镜")
+            Text("色值在放大镜下面，按 C 拷贝。不显示色值时 C 不取色，标注里的吸管照常能取")
+          }
           Picker(selection: $toolbarAlign) {
             Text("靠右").tag("right")
             Text("居中").tag("center")
@@ -116,7 +142,7 @@ struct ScreenshotTab: View {
           .onChange(of: keepsColors) { WhatsNew.touch(section: "框选时保持屏幕原色", of: .screenshot) }
           Toggle(isOn: $findsElements) {
             Text("悬停时识别窗口里的元素")
-            Text("鼠标停在侧栏、列表、按钮这些上面就框出那一块，单击截下；滚轮往上换大一块、往下换小一块，Tab 只认整扇窗口。网页内容、游戏这类认不出来的照旧只认窗口")
+            Text("鼠标停在侧栏、列表、按钮这些上面就框出那一块，单击截下；滚轮往上换大一块、往下换小一块，Tab 只认整扇窗口。游戏这类自己画界面的认不出来，照旧只认窗口")
           }
           if findsElements, !trusted {
             PermissionRow(
@@ -124,6 +150,14 @@ struct ScreenshotTab: View {
               symbol: "hand.raised.fill", color: Style.Family.command, granted: trusted
             ) { Permissions.grant(.accessibility) }
           }
+          Toggle(isOn: $findsWebElements) {
+            NewTitle("也认网页里的元素", page: .screenshot, fresh: navigation.fresh)
+            Text(
+              "浏览器和一部分用网页技术做的 App 不主动交出网页里的元素。打开后第一次停到它上面时请它打开辅助功能（只有位置和名字的那一档），一直开到它退出，可能让它稍慢一点")
+          }
+          .disabled(!findsElements)
+          // 拨过这一行，「新」就算看过了（光点进这一页不算；WhatsNew）
+          .onChange(of: findsWebElements) { WhatsNew.touch(section: "也认网页里的元素", of: .screenshot) }
         }
         Section {
           Picker("截完图放哪", selection: $placement) {
@@ -142,6 +176,12 @@ struct ScreenshotTab: View {
               ? "截完图挂到屏幕顶上的绳子上，最多 8 张：鼠标停到菜单栏那一条上它就滑下来，单击拷贝、双击改标注、拖出去发一份，点右上角的叉取下。取下不删历史。"
               : "角落的缩略图可以拖出、钉图、存储；选「都不要」后截图只在右下角闪一下，仍然进历史。"
           )
+        }
+        Section {
+          Toggle(isOn: $pinSelectsText) {
+            Text("钉图上的字可以直接选")
+            Text("鼠标停到钉图上时认出图里的字，在字上拖动就是选字，⌘C 拷贝。空白处照旧拖着挪，按住 ⌥ 在哪都能挪")
+          }
         }
         Section {
           Toggle("识字后把同一段里的换行接起来", isOn: $joinLines)
@@ -232,26 +272,28 @@ struct ScreenshotTab: View {
   /// 确认框的标题：「截图历史改成保留「7 天」？」「截图历史最多占用改成「1 GB」？」
   private static func title(_ change: HistoryLimit) -> String {
     change.isDays
-      ? "截图历史改成保留「\(daysTitle(change.value))」？"
-      : "截图历史最多占用改成「\(megabytesTitle(change.value))」？"
+      ? String(localized: "截图历史改成保留「\(daysTitle(change.value))」？")
+      : String(localized: "截图历史最多占用改成「\(megabytesTitle(change.value))」？")
   }
 
-  static func daysTitle(_ days: Int) -> String { days == 0 ? "一直留着" : "\(days) 天" }
+  static func daysTitle(_ days: Int) -> String {
+    days == 0 ? String(localized: "一直留着") : String(localized: "\(days) 天")
+  }
 
   static func megabytesTitle(_ megabytes: Int) -> String {
-    megabytes == 0 ? "不限" : "\(megabytes / 1024) GB"
+    megabytes == 0 ? String(localized: "不限") : "\(megabytes / 1024) GB"
   }
 }
 
 /// 快速保存的文件夹一行：截图页「快速保存到」和录制页「保存到」是同一个偏好、同一行。16 pt 文件夹图标 + 访达里的名字
 /// （完整路径在悬停提示里），选过的能「恢复默认」，「更改…」选别的文件夹
 struct SaveDirectoryRow: View {
-  let title: String
+  let title: LocalizedStringResource
   /// 选过的文件夹（没选过 = nil，跟随系统截屏的存储位置）；实际位置按 ScreenshotOutput.directory 算（有兜底）
   @AppStorage(Prefs.screenshotSaveDirectory) private var savedDirectory: String?
 
   var body: some View {
-    LabeledContent(title) {
+    LabeledContent {
       HStack(spacing: 8) {
         let directory = ScreenshotOutput.directory(saved: savedDirectory)
         // 同工具栏「存储到「桌面」」：访达里的名字 + 文件夹图标，完整路径在悬停提示里
@@ -275,6 +317,8 @@ struct SaveDirectoryRow: View {
         }
         Button("更改…", action: chooseDirectory)
       }
+    } label: {
+      Text(plain: title)
     }
   }
 
@@ -284,7 +328,7 @@ struct SaveDirectoryRow: View {
     panel.canChooseFiles = false
     panel.canCreateDirectories = true
     panel.directoryURL = ScreenshotOutput.directory(saved: savedDirectory)
-    panel.prompt = "选取"
+    panel.prompt = String(localized: "选取")
     panel.begin { response in
       if response == .OK, let url = panel.url { savedDirectory = url.path }
     }
@@ -297,7 +341,7 @@ private struct JoinLinesPreview: View {
   let joins: Bool
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// 行高 0.1、行距 0.03，两段之间空 0.15（> 1.2 倍行高）
+  /// 行高 0.1、行距 0.03，两段之间空 0.15（> 1.2 倍行高）。示例故意一段中文、一段英文（看两种接法），不翻
   private static let sample: [OCR.Line] = [
     ("敏捷的棕色狐狸", 0.9, 0.7), ("跳过了懒狗。", 0.77, 0.6), ("The quick brown", 0.52, 0.75),
     ("fox jumps over it.", 0.39, 0.7),
