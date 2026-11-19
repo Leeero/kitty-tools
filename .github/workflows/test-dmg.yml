@@ -86,6 +86,8 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: 传到 release
+        # fork 仓库的 GITHUB_TOKEN 默认只读时 gh release create 会 403，不阻塞 artifact 兜底
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -109,6 +111,7 @@ jobs:
           fi
 
       - name: 留一份 artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ github.sha }}
